@@ -1,13 +1,22 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from codex_hook import capture_turn, search_context
+from codex_hook import (
+    USER_ID,
+    capture_turn,
+    configure_hooks,
+    hooks_installed,
+    search_context,
+)
 
 
 class CodexHookTest(unittest.TestCase):
     def test_search_injects_only_high_scoring_safe_results(self):
         def request(path, payload, timeout):
             self.assertEqual(path, "/v1/memories/search")
-            self.assertEqual(payload["user_id"], "local-user")
+            self.assertEqual(payload["user_id"], USER_ID)
             return {
                 "results": [
                     {"memory": "keep this decision", "score": 0.7},
@@ -53,6 +62,38 @@ class CodexHookTest(unittest.TestCase):
             lambda *args: calls.append(args),
         )
         self.assertEqual(calls, [])
+
+    def test_hook_install_is_idempotent_and_uninstall_preserves_other_hooks(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "hooks.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "Stop": [{"hooks": [{"type": "command", "command": "other-tool capture", "timeout": 5}]}]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            script = Path(root) / "mem0 runtime" / "codex_hook.py"
+
+            self.assertTrue(configure_hooks(path, script, install=True))
+            self.assertFalse(configure_hooks(path, script, install=True))
+            self.assertTrue(hooks_installed(path))
+            self.assertTrue(configure_hooks(path, script, install=False))
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["hooks"]["Stop"][0]["hooks"][0]["command"], "other-tool capture")
+            self.assertNotIn("UserPromptSubmit", data["hooks"])
+
+    def test_hook_install_refuses_mixed_inline_configuration(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "hooks.json"
+            path.with_name("config.toml").write_text("[hooks]\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "inline hooks already exist"):
+                configure_hooks(path, Path(root) / "codex_hook.py", install=True)
 
 
 if __name__ == "__main__":

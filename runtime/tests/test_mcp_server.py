@@ -4,7 +4,12 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from mcp_server import MCP_INSTRUCTIONS, create_mcp_server, normalize_filters
+from mcp_server import (
+    DEFAULT_USER_ID,
+    MCP_INSTRUCTIONS,
+    create_mcp_server,
+    normalize_filters,
+)
 from memory_guards import validate_exact_keeper
 from memory_listing import list_memory_page
 
@@ -35,7 +40,7 @@ class NormalizeFiltersTest(unittest.TestCase):
     def test_preserves_flattened_metadata_filter(self):
         self.assertEqual(
             normalize_filters({"type": {"eq": "task_learning"}}),
-            {"type": {"eq": "task_learning"}, "user_id": "local-user"},
+            {"type": {"eq": "task_learning"}, "user_id": DEFAULT_USER_ID},
         )
 
     def test_http_transport_keeps_dns_rebinding_protection(self):
@@ -88,7 +93,7 @@ class NormalizeFiltersTest(unittest.TestCase):
             "memory": "reviewed fact",
             "hash": "hash-1",
             "updated_at": "2026-09-09T00:00:00+00:00",
-            "user_id": "local-user",
+            "user_id": DEFAULT_USER_ID,
         }
 
         class MemoryStub:
@@ -119,7 +124,7 @@ class NormalizeFiltersTest(unittest.TestCase):
                     "id": "memory-1",
                     "hash": "new-hash",
                     "updated_at": "2026-09-09T00:00:00+00:00",
-                    "user_id": "local-user",
+                    "user_id": DEFAULT_USER_ID,
                 }
 
         mcp = create_mcp_server(MemoryStub())
@@ -143,13 +148,13 @@ class NormalizeFiltersTest(unittest.TestCase):
                     "id": "memory-1",
                     "hash": "reviewed-hash",
                     "updated_at": "2026-09-09T00:00:00+00:00",
-                    "user_id": "local-user",
+                    "user_id": DEFAULT_USER_ID,
                 },
                 {
                     "id": "memory-1",
                     "hash": "changed-during-backup",
                     "updated_at": "2026-09-09T00:00:01+00:00",
-                    "user_id": "local-user",
+                    "user_id": DEFAULT_USER_ID,
                 },
             ]
         )
@@ -183,7 +188,7 @@ class NormalizeFiltersTest(unittest.TestCase):
                     "id": "memory-1",
                     "hash": "reviewed-hash",
                     "updated_at": "2026-09-09T00:00:00+00:00",
-                    "user_id": "local-user",
+                    "user_id": DEFAULT_USER_ID,
                 }
 
             def delete(self, memory_id):

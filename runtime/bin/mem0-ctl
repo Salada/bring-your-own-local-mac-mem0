@@ -30,6 +30,11 @@ Commands:
   health         Query Mem0 API server health endpoint
   logs [-f]      Display or follow Mem0 API server logs
   search <query> Perform semantic search on stored memories
+  agents <action> [names...]
+                 Configure, inspect, or remove MCP connections for Codex,
+                 OpenCode, and AGY. Actions: configure, status, remove
+  codex-hooks <action>
+                 Install, inspect, or remove optional Codex recall/capture hooks
   ui             Display OpenMemory UI URL and relationship information
   help           Show this help message
 
@@ -136,6 +141,84 @@ case "$cmd" in
         curl -s -X POST http://127.0.0.1:11888/v1/memories/search \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" | jq '.results[] | {id: .id, score: .score, memory: .memory}'
+        ;;
+
+    agents)
+        action="${1:-status}"
+        shift || true
+        if [ "$#" -eq 0 ]; then
+            set -- codex opencode agy
+        fi
+        mcp_url="${MEM0_MCP_URL:-http://127.0.0.1:11888/mcp}"
+        found=0
+        for agent in "$@"; do
+            case "$agent" in
+                codex|opencode|agy) ;;
+                *)
+                    echo "Error: unsupported agent '$agent' (expected codex, opencode, or agy)." >&2
+                    exit 2
+                    ;;
+            esac
+            if ! command -v "$agent" >/dev/null 2>&1; then
+                echo "Skipping $agent: command not found." >&2
+                continue
+            fi
+            found=$((found + 1))
+            case "$action:$agent" in
+                configure:codex)
+                    if codex mcp get mem0 >/dev/null 2>&1; then
+                        codex mcp remove mem0 >/dev/null
+                    fi
+                    codex mcp add mem0 --url "$mcp_url"
+                    ;;
+                configure:opencode)
+                    opencode mcp add mem0 --url "$mcp_url"
+                    ;;
+                configure:agy)
+                    agy mcp add --type http mem0 "$mcp_url"
+                    ;;
+                status:codex)
+                    codex mcp get mem0 --json
+                    ;;
+                status:opencode)
+                    opencode mcp list
+                    ;;
+                status:agy)
+                    agy mcp list
+                    ;;
+                remove:codex)
+                    codex mcp remove mem0
+                    ;;
+                remove:agy)
+                    agy mcp remove mem0
+                    ;;
+                remove:opencode)
+                    echo "OpenCode has no MCP remove command; remove mcp.mem0 from its config file." >&2
+                    exit 2
+                    ;;
+                *)
+                    echo "Error: unsupported agents action '$action'." >&2
+                    exit 2
+                    ;;
+            esac
+        done
+        if [ "$found" -eq 0 ]; then
+            echo "Error: none of the requested agent commands are installed." >&2
+            exit 1
+        fi
+        ;;
+
+    codex-hooks)
+        hook_action="${1:-status}"
+        case "$hook_action" in
+            install|status|uninstall)
+                exec /usr/bin/python3 "$MEM0_HOME/codex_hook.py" "$hook_action"
+                ;;
+            *)
+                echo "Error: unsupported codex-hooks action '$hook_action'." >&2
+                exit 2
+                ;;
+        esac
         ;;
 
     ui)

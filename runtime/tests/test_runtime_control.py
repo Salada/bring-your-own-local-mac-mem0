@@ -87,6 +87,43 @@ printf 'docker %s\\n' "$*" >> "$FAKE_LOG"
             [f"print {service}", f"bootout {service}", "docker compose down"],
         )
 
+    def test_agents_configure_uses_native_client_commands(self):
+        self._command(
+            "codex",
+            """#!/bin/sh
+printf 'codex %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
+        self._command(
+            "opencode",
+            """#!/bin/sh
+printf 'opencode %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
+        self._command(
+            "agy",
+            """#!/bin/sh
+printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
+
+        subprocess.run(
+            [str(CTL), "agents", "configure"],
+            check=True,
+            env=self._env(MEM0_MCP_URL="http://127.0.0.1:9999/mcp"),
+        )
+
+        self.assertEqual(
+            self.log.read_text().splitlines(),
+            [
+                "codex mcp get mem0",
+                "codex mcp remove mem0",
+                "codex mcp add mem0 --url http://127.0.0.1:9999/mcp",
+                "opencode mcp add mem0 --url http://127.0.0.1:9999/mcp",
+                "agy mcp add --type http mem0 http://127.0.0.1:9999/mcp",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
