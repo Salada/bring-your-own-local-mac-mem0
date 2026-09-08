@@ -84,6 +84,7 @@ case "$cmd" in
             echo "Error: $MEM0_HOME not found. Install the runtime first." >&2
             exit 1
         fi
+        docker compose --project-directory "$MEM0_HOME" up -d
         if [ -f "$MEM0_LAUNCHD_PLIST" ]; then
             if launchctl print "$launchd_service" >/dev/null 2>&1; then
                 exec launchctl kickstart -k "$launchd_service"
@@ -104,10 +105,7 @@ case "$cmd" in
     restart)
         echo "Restarting Mem0 stack..."
         "$MEM0_HOME/stop.sh"
-        if [ -f "$MEM0_LAUNCHD_PLIST" ]; then
-            exec launchctl bootstrap "$launchd_domain" "$MEM0_LAUNCHD_PLIST"
-        fi
-        exec "$MEM0_HOME/run.sh"
+        exec "$0" start
         ;;
 
     health)

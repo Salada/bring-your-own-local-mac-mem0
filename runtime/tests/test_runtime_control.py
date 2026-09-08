@@ -65,7 +65,11 @@ printf 'docker %s\\n' "$*" >> "$FAKE_LOG"
         service = f"gui/{os.getuid()}/com.salada.mem0"
         self.assertEqual(
             self.log.read_text().splitlines(),
-            [f"print {service}", f"bootstrap gui/{os.getuid()} {plist}"],
+            [
+                f"docker compose --project-directory {mem0_home} up -d",
+                f"print {service}",
+                f"bootstrap gui/{os.getuid()} {plist}",
+            ],
         )
 
     def test_stop_boots_out_configured_launchd_job(self):
