@@ -1,0 +1,26 @@
+services:
+  qdrant:
+    image: docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    container_name: mem0-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "${QDRANT__TELEMETRY_DISABLED:-true}"
+    volumes:
+      - "${MEM0_DATA_DIR:?render .env first}/qdrant/storage:/qdrant/storage"
+      - "${MEM0_DATA_DIR:?render .env first}/qdrant/snapshots:/qdrant/snapshots"
+
+  dashboard:
+    image: docker.io/mem0/openmemory-ui@sha256:c4b9578335a5cad2866f69d836476dde8ab30cdc6c181702c91a4c094cd29a2b
+    container_name: mem0-dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MEM0_DASHBOARD_PORT:-11889}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://127.0.0.1:${MEM0_SERVER_PORT:-11888}"
+      NEXT_PUBLIC_INSTANCE_NAME: "Mem0"
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      - qdrant

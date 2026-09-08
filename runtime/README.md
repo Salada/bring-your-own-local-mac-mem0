@@ -1,0 +1,221 @@
+# mem0-local-runtime
+
+Portable local Mem0 runtime for Apple Silicon macOS. It runs Mem0 and MCP on the
+host, Qdrant and OpenMemory UI in containers, and oMLX as the local embedding
+server.
+
+The runtime currently pins the tested `mem0ai==2.0.19`. Upstream `2.0.20` is
+intentionally deferred until the local seven-day package-age gate admits it.
+Its `Makefile`, Ruff version,
+line length, lint selection, import sorting, and test targets follow the
+[upstream Mem0 Python project](https://github.com/mem0ai/mem0/blob/main/Makefile)
+and its
+[`pyproject.toml`](https://github.com/mem0ai/mem0/blob/main/pyproject.toml),
+adapted from Hatch to this repository's existing `uv` workflow.
+
+## Topology
+
+| Component | Address | Runtime |
+| --- | --- | --- |
+| Mem0 REST and MCP | `127.0.0.1:11888`, MCP at `/mcp` | host Python via `uv` |
+| Qdrant | `127.0.0.1:6333` | official container |
+| OpenMemory UI | `127.0.0.1:11889` | official container |
+| oMLX embeddings | `127.0.0.1:8898/v1` | host-native Apple Silicon |
+
+```mermaid
+flowchart LR
+    subgraph Clients["Local clients"]
+        Agent["Codex and other MCP agents"]
+        Admin["mem0-admin"]
+        UI["OpenMemory UI"]
+    end
+
+    subgraph Host["Apple Silicon Mac"]
+        API["Mem0 REST + MCP\n127.0.0.1:11888"]
+        Embed["oMLX embeddings\n127.0.0.1:8898"]
+        History[("SQLite history")]
+    end
+
+    subgraph Containers["Local containers"]
+        Qdrant[("Qdrant\n127.0.0.1:6333")]
+    end
+
+    Gemini["Gemini fact extraction API"]
+
+    Agent -->|MCP| API
+    Admin -->|guarded REST| API
+    UI -->|REST| API
+    API -->|dense vectors| Qdrant
+    API -->|OpenAI-compatible embeddings| Embed
+    API -->|audit history| History
+    API -->|fact extraction| Gemini
+```
+
+The default memory namespace is `local-user`. Override it consistently with
+`MEM0_DEFAULT_USER_ID`; it is a logical Mem0 scope, not authentication or an OS
+account.
+
+## 1. Preflight
+
+```bash
+sw_vers
+uname -m
+docker version
+docker compose version
+brew install uv jq omlx
+```
+
+Stop if the machine is not Apple Silicon, required ports are occupied, or an
+existing `~/.config/mem0` contains data that has not been reviewed.
+
+## 2. Install runtime files
+
+```bash
+install_dir="$HOME/.config/mem0"
+data_dir="$HOME/.local/share/mem0"
+
+test ! -e "$install_dir"
+mkdir -p "$install_dir" "$data_dir/qdrant/storage" \
+  "$data_dir/qdrant/snapshots" "$HOME/.omlx/models" "$HOME/.omlx/logs"
+
+rsync -a --exclude '.venv' --exclude '.env' --exclude 'config.json' \
+  runtime/ "$install_dir/"
+sed "s|__HOME__|$HOME|g" runtime/env.example > "$install_dir/.env"
+chmod 600 "$install_dir/.env"
+```
+
+Run these commands from the repository root. The refusal check intentionally
+prevents an existing installation from being overwritten.
+
+## 3. Choose and download an embedding model
+
+Two known profiles are documented. Qwen3 is the repository default; BGE-M3 is
+the lower-footprint alternative used in the original local environment.
+
+| Model | Dimensions | Context | Strengths | Tradeoffs |
+| --- | ---: | ---: | --- | --- |
+| [`Qwen3-Embedding-4B-4bit-DWQ`](https://huggingface.co/mlx-community/Qwen3-Embedding-4B-4bit-DWQ) | 2560 | 32K | Instruction-aware, 100+ natural and programming languages, strong multilingual and code retrieval | Larger model and vectors; generally slower and more memory-intensive |
+| [`bge-m3-mlx-fp16`](https://huggingface.co/mlx-community/bge-m3-mlx-fp16) | 1024 | 8K | Smaller vectors, multilingual, and designed for dense, sparse, and multi-vector retrieval | Shorter context; this stack currently uses only its dense-vector output |
+
+Qwen3 is the better default when retrieval quality across code, Korean, and English
+matters more than footprint. BGE-M3 is attractive when local latency, memory use,
+and Qdrant storage are more important. BGE-M3's sparse and ColBERT-style modes do
+not become active merely by selecting it here; Mem0 currently consumes the
+OpenAI-compatible dense embedding response.
+
+Qwen3 profile:
+
+```bash
+uvx hf download mlx-community/Qwen3-Embedding-4B-4bit-DWQ \
+  --local-dir "$HOME/.omlx/models/Qwen3-Embedding-4B-4bit-DWQ"
+```
+
+BGE-M3 profile:
+
+```bash
+uvx hf download mlx-community/bge-m3-mlx-fp16 \
+  --local-dir "$HOME/.omlx/models/bge-m3-mlx-fp16"
+```
+
+The upstream references are the
+[Qwen3 Embedding model card](https://huggingface.co/Qwen/Qwen3-Embedding-4B),
+[BGE-M3 model card](https://huggingface.co/BAAI/bge-m3), and the
+[BGE-M3 paper](https://arxiv.org/abs/2402.03216).
+
+Do not switch an existing Qdrant collection between these profiles. Their vector
+dimensions differ, so changing models requires a new collection and re-embedding
+the source memories.
+
+## 4. Create local configuration
+
+Copy the Qwen3 default configuration, or select the BGE-M3 variant, and edit only
+the local files:
+
+```bash
+cd "$HOME/.config/mem0"
+# Qwen3 default:
+cp config.example.json config.json
+# BGE-M3 alternative instead:
+# cp config.bge-m3.example.json config.json
+jq --arg history "$HOME/.local/share/mem0/history.db" \
+   '.history_db_path = $history' config.json > config.json.tmp
+mv config.json.tmp config.json
+chmod 600 config.json .env
+$EDITOR .env
+uv sync
+```
+
+Set `GOOGLE_API_KEY` in `.env`. Do not put the key under `llm.config`; in
+Mem0 2.0.19 an explicit config value takes precedence over the environment.
+
+`uv run python server.py` still starts Uvicorn in-process through
+`uvicorn.run(...)`. This entrypoint centralizes `.env`, host, and port handling;
+it does not remove the Uvicorn dependency.
+Never commit or upload the populated `.env` or rendered configuration.
+
+For Gemini, OpenAI, Ollama, and OpenAI-compatible examples—with explicit
+verification status—read [`docs/llm-providers.md`](../docs/llm-providers.md).
+General defaults and precedence are documented in
+[`docs/configuration.md`](../docs/configuration.md).
+
+## 5. Start and verify
+
+Install the loopback-only oMLX job:
+
+```bash
+mkdir -p "$HOME/Library/LaunchAgents"
+sed "s|__HOME__|$HOME|g" launchd/local.omlx-mem0.plist.template \
+  > "$HOME/Library/LaunchAgents/local.omlx-mem0.plist"
+plutil -lint "$HOME/Library/LaunchAgents/local.omlx-mem0.plist"
+launchctl bootstrap "gui/$UID" "$HOME/Library/LaunchAgents/local.omlx-mem0.plist"
+launchctl kickstart -k "gui/$UID/local.omlx-mem0"
+```
+
+Then validate the full stack in the foreground:
+
+```bash
+cd "$HOME/.config/mem0"
+./run.sh
+```
+
+From another terminal:
+
+```bash
+curl -fsS http://127.0.0.1:11888/health | jq .
+curl -fsS http://127.0.0.1:6333/healthz
+curl -fsSI http://127.0.0.1:11889 | head
+```
+
+After foreground validation, stop it with Ctrl-C and install the Mem0 job:
+
+```bash
+sed "s|__HOME__|$HOME|g" launchd/local.mem0-server.plist.template \
+  > "$HOME/Library/LaunchAgents/local.mem0-server.plist"
+plutil -lint "$HOME/Library/LaunchAgents/local.mem0-server.plist"
+launchctl bootstrap "gui/$UID" "$HOME/Library/LaunchAgents/local.mem0-server.plist"
+launchctl kickstart -k "gui/$UID/local.mem0-server"
+curl -fsS http://127.0.0.1:11888/health | jq .
+```
+
+Both templates contain `__HOME__` placeholders and bind services to loopback.
+
+## Commands
+
+Add `runtime/bin` to `PATH`, or copy its commands to a personal bin directory:
+
+```text
+mem0-ctl       start, stop, status, health, logs, search
+mem0-admin     context, review, forget, bounded Dream cleanup
+mem0-backup    capture, verify, publish, rotate, status
+```
+
+Remote backup is disabled until `MEM0_BACKUP_REMOTE` is configured. For the
+meaning and safety model of the `dream` subcommand, read
+[`docs/dream.md`](../docs/dream.md).
+
+## Tests
+
+```bash
+cd runtime
+make all
+```

@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""Review and safely maintain the local Mem0 store."""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import defaultdict
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator, Optional
+
+RUNTIME_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RUNTIME_DIR))
+from env_loader import load_runtime_env
+
+load_runtime_env(RUNTIME_DIR)
+
+BASE_URL = os.environ.get("MEM0_SERVER_URL", "http://127.0.0.1:11888").rstrip("/")
+USER_ID = os.environ.get("MEM0_DEFAULT_USER_ID", "local-user")
+STATE_ROOT = Path(os.environ.get("MEM0_ADMIN_STATE_DIR", Path.home() / ".local/state/mem0-admin"))
+TEMPORARY_TYPES = {"session_state", "compact_summary"}
+RETENTION_DAYS = 90
+MAX_ACTIONS = 10
+WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+STOPWORDS = {
+    "and", "are", "for", "from", "that", "the", "this", "use", "was", "were", "with",
+    "그리고", "대한", "위한", "있다", "했다",
+}
+
+
+class AdminError(RuntimeError):
+    pass
+
+
+def http_json(
+    method: str,
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    data: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
+    url = f"{BASE_URL}{path}" + (f"?{query}" if query else "")
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    request = urllib.request.Request(url, data=body, method=method)
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+        return payload if isinstance(payload, dict) else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise AdminError(f"{method} {path} failed ({exc.code}): {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise AdminError(f"{method} {path} failed: {exc}") from exc
+
+
+def item_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = item.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def item_field(item: dict[str, Any], key: str) -> Any:
+    return item.get(key) or item_metadata(item).get(key)
+
+
+def memory_type(item: dict[str, Any]) -> str:
+    return str(item.get("type") or item_metadata(item).get("type") or "unknown")
+
+
+def is_pinned(item: dict[str, Any]) -> bool:
+    value = item.get("pinned", item_metadata(item).get("pinned", False))
+    return value is True or str(value).lower() == "true"
+
+
+def revision(item: dict[str, Any]) -> str:
+    return str(item.get("updated_at") or item.get("created_at") or "")
+
+
+def age_days(item: dict[str, Any], now: Optional[datetime] = None) -> Optional[int]:
+    raw = item.get("created_at")
+    if not raw:
+        return None
+    try:
+        created = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return ((now or datetime.now(timezone.utc)) - created.astimezone(timezone.utc)).days
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_text(text: str) -> str:
+    return " ".join(WORD_RE.findall(text.casefold()))
+
+
+def significant_words(text: str) -> set[str]:
+    return {word for word in WORD_RE.findall(text.casefold()) if len(word) >= 3 and word not in STOPWORDS}
+
+
+def iter_memories(app_id: Optional[str] = None, page_size: int = 200) -> Iterator[dict[str, Any]]:
+    cursor = None
+    seen_cursors = set()
+    seen_ids = set()
+    while True:
+        response = http_json(
+            "GET",
+            "/v1/memories",
+            params={"user_id": USER_ID, "app_id": app_id, "page_size": page_size, "cursor": cursor},
+        )
+        for item in response.get("results", []):
+            memory_id = str(item.get("id") or "")
+            if memory_id and memory_id not in seen_ids:
+                seen_ids.add(memory_id)
+                yield item
+        cursor = response.get("next_cursor")
+        if not cursor:
+            return
+        if cursor in seen_cursors:
+            raise AdminError("pagination cursor repeated; refusing an incomplete scan")
+        seen_cursors.add(cursor)
+
+
+def analyze(memories: list[dict[str, Any]]) -> dict[str, Any]:
+    by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    exact: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    low_confidence = []
+    untagged = []
+    stale = []
+    for item in memories:
+        kind = memory_type(item)
+        by_type[kind].append(item)
+        normalized = normalize_text(str(item.get("memory") or ""))
+        if normalized:
+            exact[(kind, normalized)].append(item)
+        confidence = item_metadata(item).get("confidence", item.get("confidence"))
+        try:
+            if confidence is not None and float(confidence) < 0.3:
+                low_confidence.append(item)
+        except (TypeError, ValueError):
+            pass
+        if kind == "unknown":
+            untagged.append(item)
+        age = age_days(item)
+        if age is not None and age > 180:
+            stale.append(item)
+
+    duplicate_groups = [sorted(group, key=revision, reverse=True) for group in exact.values() if len(group) > 1]
+    near_duplicates = []
+    for kind, group in by_type.items():
+        words = [(item, significant_words(str(item.get("memory") or ""))) for item in group]
+        for index, (left, left_words) in enumerate(words):
+            if len(left_words) < 3:
+                continue
+            for right, right_words in words[index + 1:]:
+                if len(right_words) < 3:
+                    continue
+                if normalize_text(str(left.get("memory") or "")) == normalize_text(str(right.get("memory") or "")):
+                    continue
+                overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
+                if overlap >= 0.6:
+                    near_duplicates.append({"type": kind, "left": left, "right": right, "overlap": round(overlap, 3)})
+
+    return {
+        "total": len(memories),
+        "by_type": {key: len(value) for key, value in sorted(by_type.items())},
+        "duplicate_groups": duplicate_groups,
+        "near_duplicates": sorted(near_duplicates, key=lambda pair: pair["overlap"], reverse=True),
+        "low_confidence": low_confidence,
+        "untagged": untagged,
+        "stale": stale,
+    }
+
+
+def preview(item: dict[str, Any], width: int = 100) -> str:
+    return " ".join(str(item.get("memory") or "").split())[:width]
+
+
+def print_review(report: dict[str, Any]) -> None:
+    print(f"memory-reviewer: total={report['total']}")
+    print(f"  exact_duplicate_groups: {len(report['duplicate_groups'])}")
+    print(f"  near_duplicate_pairs:   {len(report['near_duplicates'])}")
+    print(f"  low_confidence:         {len(report['low_confidence'])}")
+    print(f"  untagged:               {len(report['untagged'])}")
+    print(f"  stale:                  {len(report['stale'])}")
+    for group in report["duplicate_groups"][:10]:
+        ids = ", ".join(str(item["id"]) for item in group)
+        print(f"  [exact] {ids}: {preview(group[0])}")
+    for pair in report["near_duplicates"][:10]:
+        print(f"  [near {pair['overlap']:.2f}] {pair['left']['id']} <> {pair['right']['id']}")
+    print("  contradictions: manual review required; no automatic inference")
+
+
+def search(query: str, kind: Optional[str], app_id: Optional[str]) -> list[dict[str, Any]]:
+    filters: dict[str, Any] = {"user_id": USER_ID}
+    if app_id:
+        filters["app_id"] = app_id
+    if kind:
+        filters["type"] = kind
+    response = http_json(
+        "POST",
+        "/v1/memories/search",
+        data={"query": query, "filters": filters, "limit": 6},
+    )
+    return [item for item in response.get("results", []) if isinstance(item, dict)]
+
+
+def context(query: str, app_id: Optional[str]) -> None:
+    unique: dict[str, dict[str, Any]] = {}
+    for kind in ("decision", "convention", "anti_pattern", None):
+        for item in search(query, kind, app_id):
+            memory_id = str(item.get("id") or "")
+            old_score = float(unique.get(memory_id, {}).get("score") or 0)
+            if memory_id and (memory_id not in unique or float(item.get("score") or 0) > old_score):
+                unique[memory_id] = item
+    ranked = sorted(unique.values(), key=lambda item: float(item.get("score") or 0), reverse=True)[:10]
+    if not ranked:
+        return
+    print(f"mem0-context: loaded {len(ranked)} memories")
+    for item in ranked:
+        print(f"  - [{memory_type(item)}] {preview(item, 180)} [mem0:{item['id']}]")
+
+
+def get_memory(memory_id: str) -> dict[str, Any]:
+    return http_json("GET", f"/v1/memories/{urllib.parse.quote(memory_id, safe='')}")
+
+
+def verify_scope(item: dict[str, Any], app_id: Optional[str]) -> None:
+    if item_field(item, "user_id") != USER_ID:
+        raise AdminError(f"memory {item.get('id')} is outside user scope {USER_ID}")
+    if app_id and item_field(item, "app_id") != app_id:
+        raise AdminError(f"memory {item.get('id')} is outside app scope {app_id}")
+
+
+def guarded_delete(
+    item: dict[str, Any],
+    app_id: Optional[str] = None,
+    action: Optional[dict[str, Any]] = None,
+) -> None:
+    memory_hash = item.get("hash")
+    current_revision = revision(item)
+    if not memory_hash or not current_revision:
+        raise AdminError(f"memory {item.get('id')} lacks a hash or revision")
+    params = {
+        "expected_hash": memory_hash,
+        "expected_revision": current_revision,
+        "expected_user_id": USER_ID,
+        "expected_app_id": app_id,
+    }
+    if action and action.get("reason") == "exact_duplicate":
+        params.update({
+            "expected_keeper_id": action["keeper_id"],
+            "expected_keeper_hash": action["keeper_hash"],
+            "expected_keeper_revision": action["keeper_revision"],
+        })
+    http_json(
+        "DELETE",
+        f"/v1/admin/memories/{urllib.parse.quote(str(item['id']), safe='')}",
+        params=params,
+    )
+
+
+def capture_backup() -> str:
+    try:
+        result = subprocess.run(["mem0-backup", "capture"], check=True, text=True, capture_output=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        raise AdminError(f"backup failed; no mutation applied: {detail.strip()}") from exc
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise AdminError("backup produced no generation path")
+    return lines[-1]
+
+
+def plan_actions(report: dict[str, Any], max_actions: int = MAX_ACTIONS) -> tuple[list[dict[str, Any]], int]:
+    candidates: dict[str, tuple[dict[str, Any], str, Optional[dict[str, Any]]]] = {}
+    for group in report["duplicate_groups"]:
+        keeper = group[0]
+        if not keeper.get("hash") or not revision(keeper):
+            continue
+        for item in group[1:]:
+            candidates[str(item["id"])] = (item, "exact_duplicate", keeper)
+    for item in report["stale"]:
+        age = age_days(item)
+        if memory_type(item) in TEMPORARY_TYPES and age is not None and age > RETENTION_DAYS and not is_pinned(item):
+            candidates.setdefault(str(item["id"]), (item, f"expired_{memory_type(item)}_{age}d", None))
+
+    actions = []
+    for item, reason, keeper in candidates.values():
+        if is_pinned(item) or not item.get("hash") or not revision(item):
+            continue
+        action = {
+            "action": "delete",
+            "memory_id": str(item["id"]),
+            "expected_hash": item["hash"],
+            "expected_revision": revision(item),
+            "reason": reason,
+            "preview": preview(item),
+        }
+        if keeper is not None:
+            action["keeper_id"] = str(keeper["id"])
+            action["keeper_hash"] = keeper.get("hash")
+            action["keeper_revision"] = revision(keeper)
+        actions.append(action)
+    actions.sort(key=lambda action: (action["reason"], action["memory_id"]))
+    return actions[:max_actions], max(0, len(actions) - max_actions)
+
+
+def write_json_exclusive(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.open("x", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    path.chmod(0o600)
+
+
+def create_plan(app_id: Optional[str], max_actions: int) -> Path:
+    report = analyze(list(iter_memories(app_id)))
+    actions, omitted = plan_actions(report, max_actions)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = STATE_ROOT / "plans" / f"dream-{stamp}.json"
+    write_json_exclusive(path, {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": USER_ID,
+        "app_id": app_id,
+        "actions": actions,
+        "omitted_actions": omitted,
+    })
+    print(f"dream plan: {path}")
+    print(f"  proposed deletes: {len(actions)}; omitted by cap: {omitted}")
+    for action in actions:
+        print(f"  [delete] {action['memory_id']} {action['reason']}: {action['preview']}")
+    return path
+
+
+@contextmanager
+def dream_lock() -> Iterator[None]:
+    STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (STATE_ROOT / "dream.lock").open("a+") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise AdminError("another dream run is active") from exc
+        yield
+
+
+def load_plan(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise AdminError(f"plan is not a regular file: {path}")
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AdminError(f"invalid plan: {exc}") from exc
+    actions = plan.get("actions")
+    if plan.get("schema_version") != 1 or not isinstance(actions, list) or len(actions) > MAX_ACTIONS:
+        raise AdminError("unsupported or oversized dream plan")
+    if plan.get("user_id") != USER_ID:
+        raise AdminError("dream plan belongs to a different user scope")
+    if plan.get("app_id") is not None and not isinstance(plan.get("app_id"), str):
+        raise AdminError("dream plan has an invalid app scope")
+    if any(not isinstance(action, dict) or action.get("action") != "delete" for action in actions):
+        raise AdminError("dream v1 accepts delete actions only")
+    for action in actions:
+        reason = str(action.get("reason") or "")
+        if reason == "exact_duplicate":
+            required = ("memory_id", "expected_hash", "expected_revision", "keeper_id", "keeper_hash", "keeper_revision")
+        elif re.fullmatch(r"expired_(session_state|compact_summary)_\d+d", reason):
+            required = ("memory_id", "expected_hash", "expected_revision")
+        else:
+            raise AdminError(f"unsupported dream action reason: {reason or '<missing>'}")
+        if any(not action.get(key) for key in required):
+            raise AdminError(f"incomplete dream action: {action.get('memory_id') or '<missing-id>'}")
+        if reason == "exact_duplicate" and action["memory_id"] == action["keeper_id"]:
+            raise AdminError("dream keeper must be a different memory")
+    return plan
+
+
+def validate_action(action: dict[str, Any], app_id: Optional[str] = None) -> dict[str, Any]:
+    current = get_memory(str(action.get("memory_id") or ""))
+    verify_scope(current, app_id)
+    if current.get("hash") != action.get("expected_hash") or revision(current) != action.get("expected_revision"):
+        raise AdminError(f"memory {action.get('memory_id')} changed after review")
+    if is_pinned(current):
+        raise AdminError(f"memory {action.get('memory_id')} became pinned after review")
+    reason = str(action.get("reason") or "")
+    if reason == "exact_duplicate":
+        keeper = get_memory(str(action["keeper_id"]))
+        verify_scope(keeper, app_id)
+        if keeper.get("hash") != action["keeper_hash"] or revision(keeper) != action["keeper_revision"]:
+            raise AdminError(f"keeper {action['keeper_id']} changed after review")
+        if memory_type(keeper) != memory_type(current) or normalize_text(str(keeper.get("memory") or "")) != normalize_text(str(current.get("memory") or "")):
+            raise AdminError(f"memory {action.get('memory_id')} is no longer an exact duplicate")
+    elif reason.startswith("expired_"):
+        age = age_days(current)
+        if memory_type(current) not in TEMPORARY_TYPES or age is None or age <= RETENTION_DAYS:
+            raise AdminError(f"memory {action.get('memory_id')} is no longer expired temporary state")
+    return current
+
+
+def confirm(message: str, assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    if not sys.stdin.isatty():
+        raise AdminError("confirmation required; inspect the plan, then rerun with --yes")
+    if input(f"{message} Type yes: ").strip().lower() != "yes":
+        raise AdminError("cancelled; no mutation applied")
+
+
+def apply_plan(path: Path, assume_yes: bool) -> None:
+    plan = load_plan(path)
+    actions = plan["actions"]
+    if not actions:
+        print("Dream complete. No eligible exact duplicates or expired temporary memories.")
+        return
+    confirm(f"Delete {len(actions)} memories after creating a verified local backup?", assume_yes)
+
+    with dream_lock():
+        for action in actions:
+            validate_action(action, plan.get("app_id"))
+        backup = capture_backup()
+        deleted = []
+        try:
+            for action in actions:
+                current = validate_action(action, plan.get("app_id"))
+                guarded_delete(current, plan.get("app_id"), action)
+                deleted.append(action["memory_id"])
+        except Exception as exc:
+            status = "partial" if deleted else "failed"
+            result_path = STATE_ROOT / "results" / f"{path.stem}-{status}.json"
+            write_json_exclusive(result_path, {
+                "schema_version": 1,
+                "status": status,
+                "plan": str(path),
+                "backup": backup,
+                "deleted": deleted,
+                "error": str(exc),
+            })
+            raise AdminError(f"dream {status}; backup={backup}; result={result_path}: {exc}") from exc
+
+        result_path = STATE_ROOT / "results" / f"{path.stem}-complete.json"
+        write_json_exclusive(result_path, {
+            "schema_version": 1,
+            "status": "complete",
+            "plan": str(path),
+            "backup": backup,
+            "deleted": deleted,
+        })
+        print(f"Dream complete — deleted: {len(deleted)}; backup: {backup}; result: {result_path}")
+
+
+def forget(query: Optional[str], memory_id: Optional[str], app_id: Optional[str], assume_yes: bool) -> None:
+    if not memory_id:
+        if not query:
+            raise AdminError("forget requires a query or --id")
+        matches = search(query, None, app_id)[:10]
+        print(f"forget candidates: {len(matches)}")
+        for item in matches:
+            print(f"  {item['id']} score={float(item.get('score') or 0):.3f}: {preview(item, 160)}")
+        print("No deletion performed. Rerun with --id <exact-id> after review.")
+        return
+
+    item = get_memory(memory_id)
+    verify_scope(item, app_id)
+    if is_pinned(item):
+        raise AdminError("refusing to delete a pinned memory")
+    if not item.get("hash") or not revision(item):
+        raise AdminError("memory lacks the hash/revision required for guarded deletion")
+    print(f"forget target: {memory_id}: {preview(item, 200)}")
+    confirm("Delete this one memory after creating a verified local backup?", assume_yes)
+    with dream_lock():
+        current = get_memory(memory_id)
+        verify_scope(current, app_id)
+        if current.get("hash") != item.get("hash") or revision(current) != revision(item):
+            raise AdminError(f"memory {memory_id} changed after confirmation")
+        if is_pinned(current):
+            raise AdminError("memory became pinned after confirmation")
+        backup = capture_backup()
+        guarded_delete(current, app_id)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        result_path = STATE_ROOT / "results" / f"forget-{stamp}.json"
+        write_json_exclusive(result_path, {
+            "schema_version": 1,
+            "status": "complete",
+            "backup": backup,
+            "deleted": [memory_id],
+            "reason": "targeted_forget",
+        })
+        print(f"Forgot {memory_id}; backup: {backup}; result: {result_path}")
+
+
+def positive_max_actions(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= MAX_ACTIONS:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_ACTIONS}")
+    return parsed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    review_parser = subparsers.add_parser("review", help="Audit the complete local memory scope")
+    review_parser.add_argument("--app-id")
+    review_parser.add_argument("--dry-run", action="store_true", help="Explicitly state that review never mutates")
+    review_parser.add_argument("--json", action="store_true")
+
+    context_parser = subparsers.add_parser("context", help="Load deeper task context explicitly")
+    context_parser.add_argument("query")
+    context_parser.add_argument("--app-id")
+
+    forget_parser = subparsers.add_parser("forget", help="Search or delete one exact memory")
+    forget_parser.add_argument("query", nargs="?")
+    forget_parser.add_argument("--id")
+    forget_parser.add_argument("--app-id")
+    forget_parser.add_argument("--yes", action="store_true")
+
+    dream_parser = subparsers.add_parser("dream", help="Plan or apply bounded deterministic cleanup")
+    mode = dream_parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", type=Path, metavar="PLAN")
+    mode.add_argument("--auto", action="store_true")
+    dream_parser.add_argument("--app-id")
+    dream_parser.add_argument("--max-actions", type=positive_max_actions, default=MAX_ACTIONS)
+    dream_parser.add_argument("--yes", action="store_true")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        if args.command == "review":
+            report = analyze(list(iter_memories(args.app_id)))
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                print_review(report)
+        elif args.command == "context":
+            context(args.query, args.app_id)
+        elif args.command == "forget":
+            forget(args.query, args.id, args.app_id, args.yes)
+        elif args.command == "dream" and args.dry_run:
+            create_plan(args.app_id, args.max_actions)
+        elif args.command == "dream" and args.apply:
+            apply_plan(args.apply, args.yes)
+        elif args.command == "dream" and args.auto:
+            if args.yes:
+                raise AdminError("--auto does not accept --yes; approve the displayed plan interactively")
+            apply_plan(create_plan(args.app_id, args.max_actions), assume_yes=False)
+        return 0
+    except AdminError as exc:
+        print(f"mem0-admin: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

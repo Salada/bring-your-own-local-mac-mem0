@@ -1,0 +1,15 @@
+interface:
+  display_name: "Mem0 Local Admin"
+  short_description: "Review and safely maintain local Mem0"
+  default_prompt: "Use $mem0-local-admin to review the current project's memories without changing them."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "mem0"
+      description: "Local Mem0 MCP server"
+      transport: "streamable_http"
+      url: "http://localhost:11888/mcp"
+
+policy:
+  allow_implicit_invocation: false
