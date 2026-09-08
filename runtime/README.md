@@ -71,6 +71,12 @@ The launchd template and flags were checked with oMLX `0.6.4` installed by this
 Homebrew formula. A differently installed binary may require changing its
 absolute path in the local rendered plist.
 
+The template intentionally passes `--no-cache`. oMLX paged SSD caching optimizes
+repeated-prefix TTFT for generation LLMs; its embedding engine uses a single
+forward pass and does not consume that causal KV cache. See the
+[design rationale](../docs/design-rationale.md) before enabling a shared cache for
+a separate local generation workload.
+
 Stop if the machine is not Apple Silicon, required ports are occupied, or an
 existing `~/.config/mem0` contains data that has not been reviewed.
 
@@ -220,9 +226,19 @@ Remote backup is disabled until `MEM0_BACKUP_REMOTE` is configured. For the
 meaning and safety model of the `dream` subcommand, read
 [`docs/dream.md`](../docs/dream.md).
 
-Raw MCP deletion tools are not exposed. The legacy-compatible REST delete route
-returns `403` unless `MEM0_ALLOW_UNGUARDED_DELETE=true`; use `mem0-admin` for
-reviewed, revision-checked deletion with a verified backup.
+MCP exposes guarded single-item deletion. Its user-facing instructions require the
+agent to show the exact memory and ask for approval; the server itself enforces
+the reviewed hash/revision/scope and automatically captures a verified backup.
+An agent-supplied approval boolean is deliberately not treated as a security
+control. Bulk deletion is not exposed. The legacy-compatible REST delete route
+returns `403` unless `MEM0_ALLOW_UNGUARDED_DELETE=true`; `mem0-admin` remains the
+fuller review workflow.
+
+`mem0-backup` currently captures and verifies Qdrant plus history generations but
+does not provide an automated `restore` command. The generation is recovery
+material, not a claim of one-command recovery. Dream therefore remains
+human-approved and unscheduled until restore and a recovery drill are separately
+implemented and validated.
 
 ## Tests (from a cloned repository)
 

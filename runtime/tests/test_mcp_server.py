@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from mcp_server import MCP_INSTRUCTIONS, create_mcp_server, normalize_filters
 from memory_guards import validate_exact_keeper
@@ -73,12 +74,133 @@ class NormalizeFiltersTest(unittest.TestCase):
         self.assertEqual(memory.kwargs["threshold"], 0.5)
         self.assertFalse(memory.kwargs["rerank"])
 
-    def test_destructive_tools_are_not_exposed_over_mcp(self):
+    def test_only_guarded_single_delete_is_exposed_over_mcp(self):
         mcp = create_mcp_server(object())
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
 
-        self.assertNotIn("delete_memory", names)
+        self.assertIn("delete_memory", names)
         self.assertNotIn("delete_all_memories", names)
+
+    def test_delete_requires_preconditions_and_backup(self):
+        events = []
+        item = {
+            "id": "memory-1",
+            "memory": "reviewed fact",
+            "hash": "hash-1",
+            "updated_at": "2026-09-09T00:00:00+00:00",
+            "user_id": "local-user",
+        }
+
+        class MemoryStub:
+            def get(self, memory_id):
+                events.append(f"get:{memory_id}")
+                return dict(item)
+
+            def delete(self, memory_id):
+                events.append(f"delete:{memory_id}")
+
+        mcp = create_mcp_server(MemoryStub())
+        arguments = {
+            "memory_id": "memory-1",
+            "expected_hash": "hash-1",
+            "expected_revision": "2026-09-09T00:00:00+00:00",
+        }
+
+        with mock.patch("mcp_server._capture_backup_generation", side_effect=lambda: events.append("backup") or "/b"):
+            _, deleted = asyncio.run(mcp.call_tool("delete_memory", arguments))
+
+        self.assertEqual(json.loads(deleted["result"]), {"ok": True, "deleted": "memory-1", "backup": "/b"})
+        self.assertEqual(events, ["get:memory-1", "backup", "get:memory-1", "delete:memory-1"])
+
+    def test_delete_refuses_changed_memory_before_backup(self):
+        class MemoryStub:
+            def get(self, _memory_id):
+                return {
+                    "id": "memory-1",
+                    "hash": "new-hash",
+                    "updated_at": "2026-09-09T00:00:00+00:00",
+                    "user_id": "local-user",
+                }
+
+        mcp = create_mcp_server(MemoryStub())
+        arguments = {
+            "memory_id": "memory-1",
+            "expected_hash": "reviewed-hash",
+            "expected_revision": "2026-09-09T00:00:00+00:00",
+        }
+
+        with mock.patch("mcp_server._capture_backup_generation") as capture:
+            _, refused = asyncio.run(mcp.call_tool("delete_memory", arguments))
+
+        self.assertEqual(json.loads(refused["result"]), {"error": "memory changed after review"})
+        capture.assert_not_called()
+
+    def test_delete_rechecks_preconditions_after_backup(self):
+        deleted = []
+        items = iter(
+            [
+                {
+                    "id": "memory-1",
+                    "hash": "reviewed-hash",
+                    "updated_at": "2026-09-09T00:00:00+00:00",
+                    "user_id": "local-user",
+                },
+                {
+                    "id": "memory-1",
+                    "hash": "changed-during-backup",
+                    "updated_at": "2026-09-09T00:00:01+00:00",
+                    "user_id": "local-user",
+                },
+            ]
+        )
+
+        class MemoryStub:
+            def get(self, _memory_id):
+                return next(items)
+
+            def delete(self, _memory_id):
+                deleted.append(_memory_id)
+
+        mcp = create_mcp_server(MemoryStub())
+        arguments = {
+            "memory_id": "memory-1",
+            "expected_hash": "reviewed-hash",
+            "expected_revision": "2026-09-09T00:00:00+00:00",
+        }
+
+        with mock.patch("mcp_server._capture_backup_generation", return_value="/backup"):
+            _, refused = asyncio.run(mcp.call_tool("delete_memory", arguments))
+
+        self.assertEqual(json.loads(refused["result"]), {"error": "memory changed after review"})
+        self.assertEqual(deleted, [])
+
+    def test_delete_stops_when_backup_fails(self):
+        deleted = []
+
+        class MemoryStub:
+            def get(self, _memory_id):
+                return {
+                    "id": "memory-1",
+                    "hash": "reviewed-hash",
+                    "updated_at": "2026-09-09T00:00:00+00:00",
+                    "user_id": "local-user",
+                }
+
+            def delete(self, memory_id):
+                deleted.append(memory_id)
+
+        mcp = create_mcp_server(MemoryStub())
+        arguments = {
+            "memory_id": "memory-1",
+            "expected_hash": "reviewed-hash",
+            "expected_revision": "2026-09-09T00:00:00+00:00",
+        }
+
+        with mock.patch("mcp_server._capture_backup_generation", side_effect=RuntimeError("backup failed")):
+            _, refused = asyncio.run(mcp.call_tool("delete_memory", arguments))
+
+        self.assertEqual(json.loads(refused["result"]), {"error": "backup failed"})
+        self.assertEqual(deleted, [])
 
 
 class MemoryPaginationTest(unittest.TestCase):

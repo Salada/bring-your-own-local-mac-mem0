@@ -22,7 +22,7 @@ Resolve the active project to the literal basename of the current working direct
 
 ## Safety boundary
 
-- Never call MCP `delete_memory` or `delete_all_memories` for these workflows; guarded deletion belongs to `mem0-admin`.
+- Do not use MCP `delete_memory` for Dream or multi-item cleanup; those workflows belong to `mem0-admin`. MCP single-item deletion is acceptable only after the user reviews the exact memory and explicitly approves its guarded hash/revision/scope call. The server deterministically enforces those preconditions and a verified backup; it cannot independently prove conversational approval. `delete_all_memories` is not exposed.
 - Never delete fuzzy duplicates, contradictions, pinned memories, merely low-confidence memories, or items whose hash/revision changed after review.
 - Never schedule auto mode. A future unattended schedule requires a separately reviewed restore command and recovery drill.
 - Stop on incomplete pagination, failed backup, changed memory revision, partial result, or missing confirmation. Report the plan, result, and backup paths verbatim.

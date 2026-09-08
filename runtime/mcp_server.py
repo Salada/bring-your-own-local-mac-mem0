@@ -12,8 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -29,7 +32,8 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
     Memory,
 )
 
-from backup_lock import mutation_lock  # noqa: E402
+from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
+from memory_guards import validate_current  # noqa: E402
 from memory_listing import list_memory_page  # noqa: E402
 
 logger = logging.getLogger("mem0-server.mcp")
@@ -40,9 +44,27 @@ MCP_INSTRUCTIONS = (
     "preferences, conventions, failures, and environment facts before acting. After significant work, call "
     "add_memory only for durable decisions, preferences, conventions, reusable fixes, and outcomes not already "
     "captured; use concise text and metadata.type. Never store secrets, credentials, transient logs, or raw tool "
-    "output. Confirm IDs before updates. Destructive maintenance is intentionally unavailable over MCP; use the "
-    "guarded mem0-admin workflow with explicit human approval."
+    "output. Confirm IDs before updates. Before calling delete_memory, show the exact memory to the user and obtain "
+    "approval. The server then requires the reviewed hash/revision/scope and a verified backup. Bulk deletion is "
+    "intentionally unavailable over MCP."
 )
+
+
+def _capture_backup_generation() -> str:
+    """Capture a verified local generation before a guarded MCP deletion."""
+    sibling = Path(__file__).parent / "bin" / "mem0-backup"
+    executable = str(sibling) if sibling.is_file() and os.access(sibling, os.X_OK) else shutil.which("mem0-backup")
+    if not executable:
+        raise RuntimeError("mem0-backup was not found beside the runtime or on PATH")
+    try:
+        result = subprocess.run([executable, "capture"], check=True, text=True, capture_output=True)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        raise RuntimeError(f"backup failed; no deletion applied: {detail.strip()}") from exc
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("backup produced no generation path")
+    return lines[-1]
 
 
 def _normalize_metadata_keys(value: Any) -> Any:
@@ -278,6 +300,45 @@ def create_mcp_server(memory: Memory) -> FastMCP:
             return json.dumps({"result": "Memory updated.", "memory_id": memory_id, "details": res}, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in update_memory: %s", e)
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    @mcp.tool()
+    def delete_memory(
+        memory_id: str,
+        expected_hash: str,
+        expected_revision: str,
+        expected_user_id: str = DEFAULT_USER_ID,
+        expected_app_id: Optional[str] = None,
+    ) -> str:
+        """Delete one reviewed memory after deterministic checks and a verified backup.
+
+        First retrieve the memory and present it to the user. Copy its hash,
+        revision, and scope into this call only after the user approves deletion.
+        Bulk deletion is not available over MCP.
+        """
+        try:
+            current = memory.get(memory_id)
+            validate_current(
+                current,
+                expected_hash=expected_hash,
+                expected_revision=expected_revision,
+                expected_user_id=expected_user_id,
+                expected_app_id=expected_app_id,
+            )
+            backup = _capture_backup_generation()
+            with maintenance_lock():
+                current = memory.get(memory_id)
+                validate_current(
+                    current,
+                    expected_hash=expected_hash,
+                    expected_revision=expected_revision,
+                    expected_user_id=expected_user_id,
+                    expected_app_id=expected_app_id,
+                )
+                memory.delete(memory_id)
+            return json.dumps({"ok": True, "deleted": memory_id, "backup": backup}, ensure_ascii=False)
+        except Exception as e:
+            logger.exception("Error in guarded delete_memory: %s", e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     @mcp.tool()

@@ -35,7 +35,7 @@ Advanced and command-specific overrides:
 | --- | --- | --- |
 | `MEM0_CONFIG_PATH` | runtime `config.json`, then `$HOME/.config/mem0/config.json` | Explicit Mem0 component config path |
 | `MEM0_HOME` | `$HOME/.config/mem0` | Installation directory used by `mem0-ctl` |
-| `MEM0_WRITE_LOCK_PATH` | `$HOME/.local/state/mem0/memory-write.lock` | Cross-process mutation/backup lock |
+| `MEM0_WRITE_LOCK_PATH` | `$HOME/.local/state/mem0-backup/write.lock` | Cross-process mutation/backup lock |
 | `MEM0_ADMIN_STATE_DIR` | `$HOME/.local/state/mem0-admin` | Dream plans, results, and admin lock |
 | `MEM0_HISTORY_DB` | `$HOME/.local/share/mem0/history.db` | SQLite source used by backup capture |
 | `MEM0_QDRANT_URL` | `http://127.0.0.1:6333` | Qdrant URL used by backup capture |
