@@ -20,9 +20,9 @@ Usage: mem0-ctl <command> [arguments]
 
 Commands:
   status         Check status of all Mem0 components (API, UI, Qdrant, oMLX)
-  start [-d]     Start entire Mem0 stack (Docker services + host-native API)
-  stop           Stop all Mem0 services cleanly
-  restart        Restart the Mem0 stack
+  start          Start Docker services and the API (requires oMLX running)
+  stop           Stop the API and Docker services; keep shared oMLX running
+  restart        Restart the API and Docker services; keep shared oMLX running
   health         Query Mem0 API server health endpoint
   logs [-f]      Display or follow Mem0 API server logs
   search <query> Perform semantic search on stored memories

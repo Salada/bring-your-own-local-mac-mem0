@@ -28,6 +28,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
+from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
 from memory_guards import validate_current, validate_exact_keeper  # noqa: E402
@@ -44,6 +45,11 @@ DEFAULT_CORS_ORIGINS = "http://127.0.0.1:11889,http://localhost:11889"
 CORS_ORIGINS = [
     origin.strip() for origin in os.environ.get("MEM0_CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if origin.strip()
 ]
+ALLOW_UNGUARDED_DELETE = os.environ.get("MEM0_ALLOW_UNGUARDED_DELETE", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 ERROR_LOG = pathlib.Path.home() / ".local" / "state" / "mem0" / "server.error.log"
 ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
 error_log_handler = logging.FileHandler(ERROR_LOG, encoding="utf-8")
@@ -93,6 +99,7 @@ def load_memory() -> Memory:
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         config = json.load(f)
     logger.info("Initializing Mem0 Memory instance (Qdrant + oMLX + SQLite)...")
+    register_gemini_http_compat()
     return Memory.from_config(config)
 
 
@@ -356,7 +363,12 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
 @app.delete("/memories/{memory_id}")
 @app.delete("/memories/{memory_id}/")
 def delete_memory(memory_id: str):
-    """Delete a memory item by ID."""
+    """Compatibility deletion endpoint, disabled unless explicitly enabled."""
+    if not ALLOW_UNGUARDED_DELETE:
+        raise HTTPException(
+            status_code=403,
+            detail="Unguarded deletion is disabled; use mem0-admin for reviewed, backed-up deletion",
+        )
     try:
         with mutation_lock():
             memory.delete(memory_id)
@@ -458,6 +470,9 @@ def get_configure():
             values = config.get(section, {}).get("config", {})
             if "api_key" in values:
                 values["api_key"] = "***"
+            headers = values.get("http_headers")
+            if isinstance(headers, dict):
+                values["http_headers"] = {name: "***" for name in headers}
         return config
     except Exception:
         return {}
@@ -472,5 +487,5 @@ combined_mcp_app = Starlette(routes=list(sse_app.routes) + list(stream_app.route
 app.mount("/mcp", combined_mcp_app)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", os.environ.get("MEM0_SERVER_PORT", "11888")))
+    port = int(os.environ.get("MEM0_SERVER_PORT", "11888"))
     uvicorn.run(app, host="127.0.0.1", port=port)

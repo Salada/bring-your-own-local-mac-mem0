@@ -27,6 +27,13 @@ def item(memory_id, text, kind="decision", created="2026-09-01T00:00:00+00:00", 
 
 
 class Mem0AdminTest(unittest.TestCase):
+    def test_backup_prefers_sibling_command_without_path_dependency(self):
+        completed = mock.Mock(stdout="[time] captured\n/backup/generation\n")
+        with mock.patch.object(mem0_admin.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(mem0_admin.capture_backup(), "/backup/generation")
+
+        self.assertEqual(run.call_args.args[0], [str(SCRIPT.with_name("mem0-backup")), "capture"])
+
     def test_auto_rejects_noninteractive_yes_bypass(self):
         with mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--auto", "--yes"]):
             self.assertEqual(mem0_admin.main(), 1)

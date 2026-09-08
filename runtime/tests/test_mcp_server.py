@@ -73,6 +73,13 @@ class NormalizeFiltersTest(unittest.TestCase):
         self.assertEqual(memory.kwargs["threshold"], 0.5)
         self.assertFalse(memory.kwargs["rerank"])
 
+    def test_destructive_tools_are_not_exposed_over_mcp(self):
+        mcp = create_mcp_server(object())
+        names = {tool.name for tool in asyncio.run(mcp.list_tools())}
+
+        self.assertNotIn("delete_memory", names)
+        self.assertNotIn("delete_all_memories", names)
+
 
 class MemoryPaginationTest(unittest.TestCase):
     def make_memory(self):

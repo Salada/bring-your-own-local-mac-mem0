@@ -62,8 +62,14 @@ sw_vers
 uname -m
 docker version
 docker compose version
-brew install uv jq omlx
+brew install uv jq
+brew tap jundot/omlx https://github.com/jundot/omlx
+brew install jundot/omlx/omlx
 ```
+
+The launchd template and flags were checked with oMLX `0.6.4` installed by this
+Homebrew formula. A differently installed binary may require changing its
+absolute path in the local rendered plist.
 
 Stop if the machine is not Apple Silicon, required ports are occupied, or an
 existing `~/.config/mem0` contains data that has not been reviewed.
@@ -147,6 +153,7 @@ uv sync
 
 Set `GOOGLE_API_KEY` in `.env`. Do not put the key under `llm.config`; in
 Mem0 2.0.19 an explicit config value takes precedence over the environment.
+The direct `google-genai` dependency is required by this default provider.
 
 `uv run python server.py` still starts Uvicorn in-process through
 `uvicorn.run(...)`. This entrypoint centralizes `.env`, host, and port handling;
@@ -213,9 +220,12 @@ Remote backup is disabled until `MEM0_BACKUP_REMOTE` is configured. For the
 meaning and safety model of the `dream` subcommand, read
 [`docs/dream.md`](../docs/dream.md).
 
-## Tests
+Raw MCP deletion tools are not exposed. The legacy-compatible REST delete route
+returns `403` unless `MEM0_ALLOW_UNGUARDED_DELETE=true`; use `mem0-admin` for
+reviewed, revision-checked deletion with a verified backup.
+
+## Tests (from a cloned repository)
 
 ```bash
-cd runtime
-make all
+make -C runtime all
 ```

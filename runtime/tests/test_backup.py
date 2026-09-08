@@ -125,7 +125,7 @@ class LocalBackupTest(unittest.TestCase):
     def test_quiesced_sqlite_copy_rejects_unsafe_image_version(self):
         with (
             tempfile.TemporaryDirectory() as temp_dir,
-            mock.patch.dict(os.environ, {"QDRANT_VERSION": "latest --privileged"}),
+            mock.patch.dict(os.environ, {"QDRANT_IMAGE": "latest --privileged"}),
         ):
             with self.assertRaisesRegex(mem0_backup.BackupError, "unsafe characters"):
                 mem0_backup.copy_quiesced_sqlite(Path(temp_dir) / "source.db", Path(temp_dir) / "backup.db")

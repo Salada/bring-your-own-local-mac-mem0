@@ -40,7 +40,8 @@ MCP_INSTRUCTIONS = (
     "preferences, conventions, failures, and environment facts before acting. After significant work, call "
     "add_memory only for durable decisions, preferences, conventions, reusable fixes, and outcomes not already "
     "captured; use concise text and metadata.type. Never store secrets, credentials, transient logs, or raw tool "
-    "output. Confirm IDs before update/delete; never bulk-delete without explicit user approval."
+    "output. Confirm IDs before updates. Destructive maintenance is intentionally unavailable over MCP; use the "
+    "guarded mem0-admin workflow with explicit human approval."
 )
 
 
@@ -277,44 +278,6 @@ def create_mcp_server(memory: Memory) -> FastMCP:
             return json.dumps({"result": "Memory updated.", "memory_id": memory_id, "details": res}, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in update_memory: %s", e)
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    @mcp.tool()
-    def delete_memory(memory_id: str) -> str:
-        """Delete a single stored memory by its unique ID.
-
-        Compatible with official Mem0 MCP delete_memory.
-        """
-        try:
-            with mutation_lock():
-                memory.delete(memory_id)
-            return json.dumps({"ok": True, "deleted": memory_id}, ensure_ascii=False)
-        except Exception as e:
-            logger.exception("Error in delete_memory: %s", e)
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
-
-    @mcp.tool()
-    def delete_all_memories(
-        user_id: Optional[str] = DEFAULT_USER_ID,
-        agent_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-    ) -> str:
-        """Bulk delete all memories within scope.
-
-        Compatible with official Mem0 MCP delete_all_memories.
-        """
-        try:
-            with mutation_lock():
-                memory.delete_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
-            return json.dumps(
-                {
-                    "ok": True,
-                    "scope": {"user_id": user_id, "agent_id": agent_id, "run_id": run_id},
-                },
-                ensure_ascii=False,
-            )
-        except Exception as e:
-            logger.exception("Error in delete_all_memories: %s", e)
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     @mcp.tool()

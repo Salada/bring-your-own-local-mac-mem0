@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -272,8 +273,12 @@ def guarded_delete(
 
 
 def capture_backup() -> str:
+    sibling = Path(__file__).with_name("mem0-backup")
+    executable = str(sibling) if sibling.is_file() and os.access(sibling, os.X_OK) else shutil.which("mem0-backup")
+    if not executable:
+        raise AdminError("backup failed; mem0-backup was not found beside mem0-admin or on PATH")
     try:
-        result = subprocess.run(["mem0-backup", "capture"], check=True, text=True, capture_output=True)
+        result = subprocess.run([executable, "capture"], check=True, text=True, capture_output=True)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", "") or str(exc)
         raise AdminError(f"backup failed; no mutation applied: {detail.strip()}") from exc

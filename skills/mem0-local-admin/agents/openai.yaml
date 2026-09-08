@@ -9,7 +9,7 @@ dependencies:
       value: "mem0"
       description: "Local Mem0 MCP server"
       transport: "streamable_http"
-      url: "http://localhost:11888/mcp"
+      url: "http://127.0.0.1:11888/mcp"
 
 policy:
   allow_implicit_invocation: false

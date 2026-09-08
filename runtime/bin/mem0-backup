@@ -35,6 +35,9 @@ DEFAULT_STAGING_ROOT = Path.home() / ".local" / "state" / "mem0-backup" / "stagi
 DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 DEFAULT_MEM0_URL = "http://127.0.0.1:11888"
 DEFAULT_COLLECTION = "mem0"
+DEFAULT_QDRANT_IMAGE = (
+    "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
+)
 
 
 class BackupError(RuntimeError):
@@ -140,9 +143,9 @@ def sqlite_backup(source_path: Path, destination: Path) -> dict[str, int]:
 
 def copy_quiesced_sqlite(source_path: Path, destination: Path) -> dict[str, int]:
     """Copy SQLite through Docker while the caller holds the exclusive write lock."""
-    qdrant_version = os.environ.get("QDRANT_VERSION", "latest")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", qdrant_version):
-        raise BackupError("QDRANT_VERSION contains unsafe characters")
+    qdrant_image = os.environ.get("QDRANT_IMAGE", DEFAULT_QDRANT_IMAGE)
+    if not re.fullmatch(r"[A-Za-z0-9._/@:-]+", qdrant_image):
+        raise BackupError("QDRANT_IMAGE contains unsafe characters")
     command = [
         "docker",
         "run",
@@ -162,7 +165,7 @@ def copy_quiesced_sqlite(source_path: Path, destination: Path) -> dict[str, int]
         f"type=bind,source={source_path.parent},target=/source,readonly",
         "--mount",
         f"type=bind,source={destination.parent},target=/backup",
-        f"docker.io/qdrant/qdrant:{qdrant_version}",
+        qdrant_image,
         f"/source/{source_path.name}",
         f"/backup/{destination.name}",
     ]
