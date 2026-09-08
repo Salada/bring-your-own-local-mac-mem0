@@ -35,6 +35,8 @@ Advanced and command-specific overrides:
 | --- | --- | --- |
 | `MEM0_CONFIG_PATH` | runtime `config.json`, then `$HOME/.config/mem0/config.json` | Explicit Mem0 component config path |
 | `MEM0_HOME` | `$HOME/.config/mem0` | Installation directory used by `mem0-ctl` |
+| `MEM0_LAUNCHD_LABEL` | `local.mem0-server` | User launchd label controlled by `mem0-ctl` and `stop.sh` |
+| `MEM0_LAUNCHD_PLIST` | `$HOME/Library/LaunchAgents/$MEM0_LAUNCHD_LABEL.plist` | Plist bootstrapped by `mem0-ctl start` and `restart` |
 | `MEM0_WRITE_LOCK_PATH` | `$HOME/.local/state/mem0-backup/write.lock` | Cross-process mutation/backup lock |
 | `MEM0_ADMIN_STATE_DIR` | `$HOME/.local/state/mem0-admin` | Dream plans, results, and admin lock |
 | `MEM0_HISTORY_DB` | `$HOME/.local/share/mem0/history.db` | SQLite source used by backup capture |
