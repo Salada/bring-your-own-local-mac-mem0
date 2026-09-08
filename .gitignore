@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.pyc
+runtime/config.json
+runtime/server.log
+runtime/*.error.log
+runtime/.pytest_cache/
+runtime/.ruff_cache/

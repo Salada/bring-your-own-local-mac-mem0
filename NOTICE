@@ -1,0 +1,15 @@
+Bring Your Own Local Mac Mem0
+Copyright 2026 Salada
+
+This project is an independent local runtime and integration layer designed for
+interoperability with Mem0 (https://github.com/mem0ai/mem0). Mem0 is distributed
+under the Apache License 2.0. This project is not affiliated with or endorsed by
+Mem0, Inc.
+
+The upstream license and `pyproject.toml` declaration were verified on 2026-09-09
+against Mem0 main commit dae67f74f5cc7bf138c7d7d6f9cec5ce4b4373b3, where the
+Python project version was 2.0.20 and the declared license was Apache-2.0. The
+runtime remains pinned separately to the last locally qualified Mem0 release.
+
+Third-party packages, models, and container images retain their respective
+licenses. See their linked upstream sources before redistribution.

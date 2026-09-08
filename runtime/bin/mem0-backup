@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+"""Create, verify, publish, and rotate consistent Mem0 backups."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+RUNTIME_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RUNTIME_DIR))
+from env_loader import load_env_file  # noqa: E402
+
+BACKUP_TZ = timezone.utc
+BACKUP_TIMEZONE = "UTC"
+GENERATION_RE = re.compile(r"^mem0-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})$")
+RETENTION = 12
+INTERVAL = timedelta(days=7)
+DEFAULT_HISTORY_DB = Path.home() / ".local" / "share" / "mem0" / "history.db"
+DEFAULT_STAGING_ROOT = Path.home() / ".local" / "state" / "mem0-backup" / "staging"
+DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
+DEFAULT_MEM0_URL = "http://127.0.0.1:11888"
+DEFAULT_COLLECTION = "mem0"
+DEFAULT_QDRANT_IMAGE = (
+    "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
+)
+
+
+class BackupError(RuntimeError):
+    pass
+
+
+def log(message: str) -> None:
+    print(f"[{datetime.now(BACKUP_TZ).isoformat(timespec='seconds')}] {message}", flush=True)
+
+
+def terminate(_signum: int, _frame: Any) -> None:
+    raise BackupError("termination requested")
+
+
+def remote_root() -> str:
+    remote = os.environ.get("MEM0_BACKUP_REMOTE", "").strip().rstrip("/")
+    if not remote:
+        raise BackupError("MEM0_BACKUP_REMOTE is unset; backup is disabled")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+:/[^\r\n]+", remote):
+        raise BackupError("MEM0_BACKUP_REMOTE must look like remote:/non-root/path")
+    _, path = remote.split(":", 1)
+    if path == "/" or ".." in Path(path).parts:
+        raise BackupError("refusing unsafe backup remote path")
+    return remote
+
+
+def generation_name(now: Optional[datetime] = None) -> str:
+    current = (now or datetime.now(BACKUP_TZ)).astimezone(BACKUP_TZ).replace(microsecond=0)
+    return f"mem0-{current.isoformat(timespec='seconds')}"
+
+
+def parse_generation(name: str) -> datetime:
+    match = GENERATION_RE.fullmatch(name)
+    if not match:
+        raise ValueError(f"invalid Mem0 generation name: {name}")
+    parsed = datetime.fromisoformat(match.group(1))
+    if parsed.utcoffset() is None:
+        raise ValueError(f"generation has no timezone offset: {name}")
+    return parsed
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def http_json(method: str, url: str, data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    body = json.dumps(data).encode() if data is not None else None
+    request = urllib.request.Request(url, data=body, method=method)
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.load(response)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise BackupError(f"{method} {url} failed: {exc}") from exc
+
+
+def download(url: str, destination: Path) -> None:
+    try:
+        with urllib.request.urlopen(url, timeout=300) as response, destination.open("wb") as output:
+            shutil.copyfileobj(response, output, 1024 * 1024)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise BackupError(f"download failed: {url}: {exc}") from exc
+
+
+def sqlite_counts(database_path: Path) -> dict[str, int]:
+    database = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    try:
+        result = database.execute("PRAGMA integrity_check").fetchone()
+        if not result or result[0] != "ok":
+            raise BackupError(f"SQLite integrity_check failed: {result}")
+        tables = [
+            row[0]
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        counts = {}
+        for table in tables:
+            quoted = table.replace('"', '""')
+            counts[table] = database.execute(f'SELECT COUNT(*) FROM "{quoted}"').fetchone()[0]
+        return counts
+    finally:
+        database.close()
+
+
+def sqlite_backup(source_path: Path, destination: Path) -> dict[str, int]:
+    if not source_path.is_file():
+        raise BackupError(f"SQLite history database not found: {source_path}")
+    source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    target = sqlite3.connect(destination)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+    return sqlite_counts(destination)
+
+
+def copy_quiesced_sqlite(source_path: Path, destination: Path) -> dict[str, int]:
+    """Copy SQLite through Docker while the caller holds the exclusive write lock."""
+    qdrant_image = os.environ.get("QDRANT_IMAGE", DEFAULT_QDRANT_IMAGE)
+    if not re.fullmatch(r"[A-Za-z0-9._/@:-]+", qdrant_image):
+        raise BackupError("QDRANT_IMAGE contains unsafe characters")
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "--entrypoint",
+        "/usr/bin/cp",
+        "--mount",
+        f"type=bind,source={source_path.parent},target=/source,readonly",
+        "--mount",
+        f"type=bind,source={destination.parent},target=/backup",
+        qdrant_image,
+        f"/source/{source_path.name}",
+        f"/backup/{destination.name}",
+    ]
+    try:
+        subprocess.run(command, check=True, text=True, capture_output=True)
+    except FileNotFoundError as exc:
+        raise BackupError("docker is not installed") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise BackupError(f"quiesced SQLite copy failed: {detail}") from exc
+    if not destination.is_file():
+        raise BackupError(f"quiesced SQLite copy produced no file: {destination}")
+    return sqlite_counts(destination)
+
+
+def qdrant_metadata(qdrant_url: str, collection: str) -> dict[str, Any]:
+    service = http_json("GET", f"{qdrant_url}/")
+    info = http_json("GET", f"{qdrant_url}/collections/{urllib.parse.quote(collection, safe='')}")
+    result = info.get("result") or {}
+    vectors = (((result.get("config") or {}).get("params") or {}).get("vectors"))
+    return {
+        "version": service.get("version"),
+        "collection": collection,
+        "points_count": result.get("points_count"),
+        "vectors": vectors,
+    }
+
+
+def create_qdrant_snapshot(qdrant_url: str, collection: str) -> str:
+    response = http_json(
+        "POST",
+        f"{qdrant_url}/collections/{urllib.parse.quote(collection, safe='')}/snapshots?wait=true",
+    )
+    name = (response.get("result") or {}).get("name")
+    if not isinstance(name, str) or not name.endswith(".snapshot"):
+        raise BackupError(f"Qdrant returned no snapshot name: {response}")
+    return name
+
+
+def delete_qdrant_snapshot(qdrant_url: str, collection: str, snapshot_name: str) -> None:
+    url = (
+        f"{qdrant_url}/collections/{urllib.parse.quote(collection, safe='')}/snapshots/"
+        f"{urllib.parse.quote(snapshot_name, safe='')}?wait=true"
+    )
+    try:
+        http_json("DELETE", url)
+    except BackupError as exc:
+        log(f"WARNING: could not remove temporary Qdrant snapshot: {exc}")
+
+
+def mem0_version(mem0_url: str) -> Optional[str]:
+    try:
+        return http_json("GET", f"{mem0_url}/health").get("baseline")
+    except BackupError:
+        return None
+
+
+def capture(now: Optional[datetime] = None) -> Path:
+    from backup_lock import backup_lock
+
+    name = generation_name(now)
+    parse_generation(name)
+    staging_root = Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
+    partial = staging_root / f"._partial-{name}"
+    final = staging_root / name
+    if partial.exists() or final.exists():
+        raise BackupError(f"generation already exists locally: {name}")
+    staging_root.mkdir(parents=True, exist_ok=True)
+    partial.mkdir(mode=0o700)
+
+    qdrant_url = os.environ.get("MEM0_QDRANT_URL", DEFAULT_QDRANT_URL).rstrip("/")
+    mem0_url = os.environ.get("MEM0_SERVER_URL", DEFAULT_MEM0_URL).rstrip("/")
+    collection = os.environ.get("MEM0_QDRANT_COLLECTION", DEFAULT_COLLECTION)
+    history_db = Path(os.environ.get("MEM0_HISTORY_DB", DEFAULT_HISTORY_DB))
+    snapshot_name: Optional[str] = None
+    try:
+        with backup_lock():
+            qdrant = qdrant_metadata(qdrant_url, collection)
+            snapshot_name = create_qdrant_snapshot(qdrant_url, collection)
+            sqlite_rows = copy_quiesced_sqlite(history_db, partial / "history.db")
+
+        encoded_collection = urllib.parse.quote(collection, safe="")
+        encoded_snapshot = urllib.parse.quote(snapshot_name, safe="")
+        download(
+            f"{qdrant_url}/collections/{encoded_collection}/snapshots/{encoded_snapshot}",
+            partial / "qdrant.snapshot",
+        )
+
+        files = {}
+        for filename in ("qdrant.snapshot", "history.db"):
+            path = partial / filename
+            files[filename] = {"sha256": sha256(path), "size": path.stat().st_size}
+            path.chmod(0o600)
+        timestamp = name.removeprefix("mem0-")
+        manifest = {
+            "schema_version": 1,
+            "generation": name,
+            "created_at": timestamp,
+            "timezone": BACKUP_TIMEZONE,
+            "mem0": {"version": mem0_version(mem0_url)},
+            "qdrant": qdrant,
+            "sqlite": {
+                "source": str(history_db),
+                "method": "exclusive-lock-container-copy",
+                "rows": sqlite_rows,
+            },
+            "files": files,
+        }
+        (partial / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        sums = "".join(f"{files[name]['sha256']}  {name}\n" for name in sorted(files))
+        (partial / "SHA256SUMS").write_text(sums, encoding="utf-8")
+        for path in (partial / "manifest.json", partial / "SHA256SUMS"):
+            path.chmod(0o600)
+        verify(partial, expected_name=name)
+        partial.rename(final)
+        log(f"captured {final}")
+        return final
+    except BaseException:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+    finally:
+        if snapshot_name:
+            delete_qdrant_snapshot(qdrant_url, collection, snapshot_name)
+
+
+def verify(generation: Path, expected_name: Optional[str] = None) -> dict[str, Any]:
+    if not generation.is_dir() or generation.is_symlink():
+        raise BackupError(f"generation is not a real directory: {generation}")
+    name = expected_name or generation.name
+    try:
+        parse_generation(name)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
+    manifest_path = generation / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackupError(f"invalid manifest: {manifest_path}: {exc}") from exc
+    if manifest.get("schema_version") != 1 or manifest.get("generation") != name:
+        raise BackupError("manifest schema or generation mismatch")
+    if manifest.get("timezone") != BACKUP_TIMEZONE:
+        raise BackupError(f"manifest timezone is not {BACKUP_TIMEZONE}")
+    expected_time = name.removeprefix("mem0-")
+    if manifest.get("created_at") != expected_time:
+        raise BackupError("manifest timestamp does not match generation")
+
+    expected_sums = []
+    for filename in ("history.db", "qdrant.snapshot"):
+        path = generation / filename
+        if not path.is_file() or path.is_symlink():
+            raise BackupError(f"missing or unsafe backup file: {path}")
+        record = (manifest.get("files") or {}).get(filename) or {}
+        actual_hash = sha256(path)
+        if record.get("sha256") != actual_hash or record.get("size") != path.stat().st_size:
+            raise BackupError(f"checksum or size mismatch: {filename}")
+        expected_sums.append(f"{actual_hash}  {filename}\n")
+    if (generation / "SHA256SUMS").read_text(encoding="utf-8") != "".join(expected_sums):
+        raise BackupError("SHA256SUMS does not match manifest")
+
+    database = sqlite3.connect(f"file:{generation / 'history.db'}?mode=ro", uri=True)
+    try:
+        result = database.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        database.close()
+    if not result or result[0] != "ok":
+        raise BackupError(f"SQLite integrity_check failed: {result}")
+    log(f"verified {generation}")
+    return manifest
+
+
+def rclone(*arguments: str, capture_output: bool = True) -> subprocess.CompletedProcess[str]:
+    command = ["rclone", *arguments]
+    try:
+        return subprocess.run(command, check=True, text=True, capture_output=capture_output)
+    except FileNotFoundError as exc:
+        raise BackupError("rclone is not installed") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise BackupError(f"rclone failed: {' '.join(command)}: {detail}") from exc
+
+
+def remote_join(root: str, child: str) -> str:
+    return f"{root.rstrip('/')}/{child}"
+
+
+def remote_generations(root: str) -> list[tuple[datetime, str]]:
+    output = rclone("lsf", "--dirs-only", "--format", "p", root).stdout
+    generations = []
+    for line in output.splitlines():
+        name = line.strip().rstrip("/")
+        if GENERATION_RE.fullmatch(name):
+            generations.append((parse_generation(name), name))
+    return sorted(generations)
+
+
+def init_remote(root: str) -> None:
+    rclone("mkdir", root)
+    with tempfile.TemporaryDirectory(prefix="mem0-backup-canary-") as temp_dir:
+        source = Path(temp_dir) / "canary"
+        restored = Path(temp_dir) / "restored"
+        source.write_bytes(os.urandom(64))
+        remote_canary = remote_join(root, f".canary-{os.getpid()}")
+        try:
+            rclone("copyto", str(source), remote_canary, "--immutable")
+            rclone("copyto", remote_canary, str(restored))
+            if sha256(source) != sha256(restored):
+                raise BackupError("remote canary round-trip checksum mismatch")
+        finally:
+            try:
+                rclone("deletefile", remote_canary)
+            except BackupError:
+                pass
+    log(f"initialized and verified {root}")
+
+
+def publish(generation: Path, root: str) -> None:
+    verify(generation)
+    names = {name for _, name in remote_generations(root)}
+    if generation.name in names:
+        final = remote_join(root, generation.name)
+        rclone("check", str(generation), final, "--download")
+        log(f"remote generation already exists and matches local data: {final}")
+        return
+    partial = remote_join(root, f"._partial-{generation.name}")
+    final = remote_join(root, generation.name)
+    rclone(
+        "copy",
+        str(generation),
+        partial,
+        "--immutable",
+        "--retries",
+        "5",
+        "--low-level-retries",
+        "10",
+    )
+    rclone("check", str(generation), partial, "--download")
+    rclone("moveto", partial, final)
+    rclone("check", str(generation), final, "--download")
+    log(f"published and remotely verified {final}")
+
+
+def rotate(root: str) -> list[str]:
+    generations = remote_generations(root)
+    expired = [name for _, name in generations[:-RETENTION]]
+    for name in expired:
+        rclone("purge", remote_join(root, name))
+        log(f"pruned expired generation {name}")
+    return expired
+
+
+def local_pending() -> list[Path]:
+    root = Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
+    if not root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir() and not path.is_symlink() and GENERATION_RE.fullmatch(path.name)
+    )
+
+
+def local_partials() -> list[Path]:
+    root = Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
+    if not root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir()
+        and not path.is_symlink()
+        and GENERATION_RE.fullmatch(path.name.removeprefix("._partial-"))
+    )
+
+
+def backup_due(generations: list[tuple[datetime, str]], now: Optional[datetime] = None) -> bool:
+    if not generations:
+        return True
+    current = (now or datetime.now(BACKUP_TZ)).astimezone(BACKUP_TZ)
+    return current - generations[-1][0] >= INTERVAL
+
+
+def status(root: str) -> bool:
+    generations = remote_generations(root)
+    due = backup_due(generations)
+    latest = generations[-1][1] if generations else "none"
+    print(f"remote={root}")
+    print(f"latest={latest}")
+    print(f"generations={len(generations)}")
+    print(f"due={'yes' if due else 'no'}")
+    print(f"local_pending={len(local_pending())}")
+    print(f"local_partials={len(local_partials())}")
+    return due
+
+
+def run() -> None:
+    root = remote_root()
+    generations = remote_generations(root)
+    partials = local_partials()
+    if partials:
+        raise BackupError(f"partial local generations require operator review: {partials}")
+    pending = local_pending()
+    if len(pending) > 1:
+        raise BackupError(f"multiple pending local generations require operator review: {pending}")
+    if pending:
+        generation = pending[0]
+        log(f"resuming pending generation {generation.name}")
+    elif not backup_due(generations):
+        log(f"backup not due; latest is {generations[-1][1]}")
+        return
+    else:
+        generation = capture()
+    publish(generation, root)
+    shutil.rmtree(generation)
+    rotate(root)
+
+
+def main() -> int:
+    signal.signal(signal.SIGTERM, terminate)
+    load_env_file(Path.home() / ".config" / "mem0" / ".env")
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("run", help="Run the due-aware backup workflow")
+    subparsers.add_parser("status", help="Show remote backup status")
+    subparsers.add_parser("init-remote", help="Create and test the configured remote folder")
+    subparsers.add_parser("capture", help="Capture a new local generation")
+    verify_parser = subparsers.add_parser("verify", help="Verify a local generation")
+    verify_parser.add_argument("generation", type=Path)
+    publish_parser = subparsers.add_parser("publish", help="Publish a local generation")
+    publish_parser.add_argument("generation", type=Path)
+    subparsers.add_parser("rotate", help="Retain the newest 12 remote generations")
+    args = parser.parse_args()
+
+    try:
+        if args.command == "capture":
+            print(capture())
+            return 0
+        if args.command == "verify":
+            verify(args.generation)
+            return 0
+        root = remote_root()
+        if args.command == "run":
+            run()
+        elif args.command == "status":
+            status(root)
+        elif args.command == "init-remote":
+            init_remote(root)
+        elif args.command == "publish":
+            publish(args.generation, root)
+        elif args.command == "rotate":
+            rotate(root)
+        return 0
+    except BackupError as exc:
+        print(f"mem0-backup: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

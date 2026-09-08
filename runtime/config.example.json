@@ -1,0 +1,29 @@
+{
+  "llm": {
+    "provider": "gemini",
+    "config": {
+      "model": "gemini-3.5-flash-lite",
+      "temperature": 0.1
+    }
+  },
+  "embedder": {
+    "provider": "openai",
+    "config": {
+      "model": "Qwen3-Embedding-4B-4bit-DWQ",
+      "openai_base_url": "http://127.0.0.1:8898/v1",
+      "api_key": "dummy",
+      "embedding_dims": 2560
+    }
+  },
+  "vector_store": {
+    "provider": "qdrant",
+    "config": {
+      "collection_name": "mem0",
+      "host": "127.0.0.1",
+      "port": 6333,
+      "embedding_model_dims": 2560
+    }
+  },
+  "history_db_path": "__SET_TO_ABSOLUTE_HOME__/.local/share/mem0/history.db",
+  "version": "v1.1"
+}

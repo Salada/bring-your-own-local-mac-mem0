@@ -1,0 +1,61 @@
+[project]
+name = "mem0-local-runtime"
+version = "0.1.0"
+description = "Local Mem0 REST and MCP runtime for Apple Silicon macOS"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mem0ai[nlp]==2.0.19",
+    "google-genai>=2.20.0",
+    "qdrant-client>=1.10.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "mcp>=1.0.0,<2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.16.0",
+    "isort>=5.13.2",
+    "pytest>=8.2.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "backup_lock",
+    "codex_hook",
+    "env_loader",
+    "gemini_http",
+    "http_errors",
+    "mcp_server",
+    "memory_guards",
+    "memory_listing",
+    "server",
+]
+
+[tool.isort]
+profile = "black"
+known_first_party = [
+    "backup_lock",
+    "codex_hook",
+    "env_loader",
+    "gemini_http",
+    "http_errors",
+    "mcp_server",
+    "memory_guards",
+    "memory_listing",
+    "server",
+]
