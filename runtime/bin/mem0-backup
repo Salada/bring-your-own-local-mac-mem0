@@ -44,7 +44,6 @@ DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 DEFAULT_MEM0_URL = "http://127.0.0.1:11888"
 DEFAULT_COLLECTION = "mem0"
 DEFAULT_RUNTIME_HOME = Path.home() / ".config" / "mem0"
-DEFAULT_LAUNCHD_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.mem0-server.plist"
 DEFAULT_QDRANT_IMAGE = (
     "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
 )
@@ -427,7 +426,9 @@ def require_managed_runtime() -> None:
         raise BackupError(
             f"restore must run from the installed MEM0_HOME ({managed_home}), not {RUNTIME_DIR}"
         )
-    launchd_plist = Path(os.environ.get("MEM0_LAUNCHD_PLIST", DEFAULT_LAUNCHD_PLIST))
+    launchd_label = os.environ.get("MEM0_LAUNCHD_LABEL", "local.mem0-server")
+    default_plist = Path.home() / "Library" / "LaunchAgents" / f"{launchd_label}.plist"
+    launchd_plist = Path(os.environ.get("MEM0_LAUNCHD_PLIST", default_plist))
     if not launchd_plist.is_file():
         raise BackupError(f"restore requires the launchd-managed API: {launchd_plist} not found")
 
