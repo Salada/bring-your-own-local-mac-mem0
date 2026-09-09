@@ -95,6 +95,12 @@ printf 'codex %s\\n' "$*" >> "$FAKE_LOG"
 """,
         )
         self._command(
+            "claude",
+            """#!/bin/sh
+printf 'claude %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
+        self._command(
             "opencode",
             """#!/bin/sh
 printf 'opencode %s\\n' "$*" >> "$FAKE_LOG"
@@ -121,6 +127,8 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
                 "codex mcp get mem0",
                 "codex mcp remove mem0",
                 "codex mcp add mem0 --url http://127.0.0.1:9999/mcp",
+                "claude mcp remove mem0 --scope user",
+                "claude mcp add --transport http mem0 --scope user http://127.0.0.1:9999/mcp",
                 "opencode mcp add mem0 --url http://127.0.0.1:9999/mcp",
                 "agy mcp add --type http mem0 http://127.0.0.1:9999/mcp",
             ],
@@ -129,7 +137,7 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
         self.assertIn("codex-hooks install", result.stdout)
 
     def test_agents_remove_continues_after_opencode_guidance(self):
-        for agent in ("codex", "opencode", "agy"):
+        for agent in ("codex", "claude", "opencode", "agy"):
             self._command(
                 agent,
                 f"""#!/bin/sh
@@ -147,7 +155,11 @@ printf '{agent} %s\\n' "$*" >> "$FAKE_LOG"
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
             self.log.read_text().splitlines(),
-            ["codex mcp remove mem0", "agy mcp remove mem0"],
+            [
+                "codex mcp remove mem0",
+                "claude mcp remove mem0 --scope user",
+                "agy mcp remove mem0",
+            ],
         )
         self.assertIn("remove mcp.mem0", result.stderr)
 

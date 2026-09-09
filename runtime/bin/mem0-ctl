@@ -32,7 +32,8 @@ Commands:
   search <query> Perform semantic search on stored memories
   agents <action> [names...]
                  Configure, inspect, or remove MCP connections for Codex,
-                 OpenCode, and AGY. Actions: configure, status, remove
+                 Claude Code, OpenCode, and AGY. Actions: configure, status,
+                 remove
   codex-hooks <action>
                  Install, inspect, or remove Codex recall/capture hooks
   ui             Display OpenMemory UI URL and relationship information
@@ -147,7 +148,7 @@ case "$cmd" in
         action="${1:-status}"
         shift || true
         if [ "$#" -eq 0 ]; then
-            set -- codex opencode agy
+            set -- codex claude opencode agy
         fi
         mcp_url="${MEM0_MCP_URL:-http://127.0.0.1:11888/mcp}"
         found=0
@@ -155,9 +156,9 @@ case "$cmd" in
         remove_incomplete=0
         for agent in "$@"; do
             case "$agent" in
-                codex|opencode|agy) ;;
+                codex|claude|opencode|agy) ;;
                 *)
-                    echo "Error: unsupported agent '$agent' (expected codex, opencode, or agy)." >&2
+                    echo "Error: unsupported agent '$agent' (expected codex, claude, opencode, or agy)." >&2
                     exit 2
                     ;;
             esac
@@ -174,6 +175,10 @@ case "$cmd" in
                     codex mcp add mem0 --url "$mcp_url"
                     configured_codex=1
                     ;;
+                configure:claude)
+                    claude mcp remove mem0 --scope user >/dev/null 2>&1 || true
+                    claude mcp add --transport http mem0 --scope user "$mcp_url"
+                    ;;
                 configure:opencode)
                     opencode mcp add mem0 --url "$mcp_url"
                     ;;
@@ -183,6 +188,9 @@ case "$cmd" in
                 status:codex)
                     codex mcp get mem0 --json
                     ;;
+                status:claude)
+                    claude mcp get mem0
+                    ;;
                 status:opencode)
                     opencode mcp list
                     ;;
@@ -191,6 +199,9 @@ case "$cmd" in
                     ;;
                 remove:codex)
                     codex mcp remove mem0
+                    ;;
+                remove:claude)
+                    claude mcp remove mem0 --scope user
                     ;;
                 remove:agy)
                     agy mcp remove mem0
