@@ -27,6 +27,7 @@ the server default. Repository fallbacks apply only when neither was supplied.
 | `MEM0_DATA_DIR` | `$HOME/.local/share/mem0` | Qdrant and history storage root |
 | `MEM0_BACKUP_REMOTE` | unset | Optional rclone destination; backup publishing stays disabled when unset |
 | `MEM0_BACKUP_STAGING_DIR` | `$HOME/.local/state/mem0-backup/staging` | Verified local backup staging |
+| `MEM0_RESTORE_STATE_DIR` | `$HOME/.local/state/mem0-backup/restore` | Private rollback generations and incomplete-restore marker |
 | `MEM0_ALLOW_UNGUARDED_DELETE` | `false` | Opt in to raw compatibility delete endpoints; guarded `mem0-admin` deletion is preferred |
 
 Advanced and command-specific overrides:

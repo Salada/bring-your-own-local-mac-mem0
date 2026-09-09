@@ -27,7 +27,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
     Memory,
 )
 
-from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
+from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
 from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
@@ -102,6 +102,12 @@ def load_memory() -> Memory:
     register_gemini_http_compat()
     return Memory.from_config(config)
 
+
+incomplete_restore = restore_marker()
+if incomplete_restore.exists():
+    raise RuntimeError(
+        f"incomplete restore marker exists: {incomplete_restore}; complete the rollback restore before starting Mem0"
+    )
 
 memory = load_memory()
 mcp = create_mcp_server(memory)
