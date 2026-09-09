@@ -7,7 +7,8 @@ tools available to the model, but it does not force a search on every prompt.
 
 ## Connect
 
-Install and start the [runtime](../../runtime/README.md), then run:
+Install OpenCode so `opencode` is on `PATH`, then install and start the
+[runtime](../../runtime/README.md) and run:
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl health
