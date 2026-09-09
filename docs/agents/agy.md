@@ -28,7 +28,7 @@ old URL to the current HTTP endpoint. That replacement path follows the CLI
 help but was not directly tested here. The explicit `--type http` is kept for
 readability even though this version can infer the transport from the URL.
 
-The local regression used a temporary server name, confirmed this row with
+The local regression used a temporary server name, confirmed this data row with
 `agy mcp list`, and removed it afterward without changing the existing `mem0`
 entry:
 
@@ -42,7 +42,7 @@ file. This loopback deployment needs no headers, environment variables, or
 Mem0 Cloud key.
 
 See the official [Antigravity CLI documentation](https://antigravity.google/docs/cli/overview)
-and [source repository](https://github.com/google-antigravity/antigravity-cli).
+and [public repository](https://github.com/google-antigravity/antigravity-cli).
 
 ## Verify memory use
 
