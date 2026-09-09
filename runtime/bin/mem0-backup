@@ -31,7 +31,7 @@ from backup_lock import (  # noqa: E402
     restore_marker,
     restore_root,
 )
-from env_loader import load_env_file  # noqa: E402
+from env_loader import load_env_file, load_runtime_env  # noqa: E402
 
 BACKUP_TZ = timezone.utc
 BACKUP_TIMEZONE = "UTC"
@@ -43,6 +43,8 @@ DEFAULT_STAGING_ROOT = Path.home() / ".local" / "state" / "mem0-backup" / "stagi
 DEFAULT_QDRANT_URL = "http://127.0.0.1:6333"
 DEFAULT_MEM0_URL = "http://127.0.0.1:11888"
 DEFAULT_COLLECTION = "mem0"
+DEFAULT_RUNTIME_HOME = Path.home() / ".config" / "mem0"
+DEFAULT_LAUNCHD_PLIST = Path.home() / "Library" / "LaunchAgents" / "local.mem0-server.plist"
 DEFAULT_QDRANT_IMAGE = (
     "docker.io/qdrant/qdrant@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10"
 )
@@ -419,6 +421,17 @@ def run_checked(command: list[str], operation: str) -> subprocess.CompletedProce
         raise BackupError(f"{operation} failed: {detail}") from exc
 
 
+def require_managed_runtime() -> None:
+    managed_home = Path(os.environ.get("MEM0_HOME", DEFAULT_RUNTIME_HOME)).resolve()
+    if RUNTIME_DIR.resolve() != managed_home:
+        raise BackupError(
+            f"restore must run from the installed MEM0_HOME ({managed_home}), not {RUNTIME_DIR}"
+        )
+    launchd_plist = Path(os.environ.get("MEM0_LAUNCHD_PLIST", DEFAULT_LAUNCHD_PLIST))
+    if not launchd_plist.is_file():
+        raise BackupError(f"restore requires the launchd-managed API: {launchd_plist} not found")
+
+
 def control_stack(action: str) -> None:
     controller = RUNTIME_DIR / "bin" / "mem0-ctl"
     if not controller.is_file():
@@ -435,22 +448,24 @@ def start_qdrant() -> None:
 
 def wait_for_qdrant(qdrant_url: str) -> str:
     error: Optional[BackupError] = None
-    for _ in range(40):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
         try:
             return qdrant_service_version(qdrant_url, timeout=0.5)
         except BackupError as exc:
             error = exc
-            time.sleep(0.25)
+            time.sleep(0.5)
     raise BackupError(f"Qdrant did not become ready: {error}")
 
 
 def wait_for_mem0_down(mem0_url: str) -> None:
-    for _ in range(40):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
         try:
             http_json("GET", f"{mem0_url}/health", timeout=0.5)
         except BackupError:
             return
-        time.sleep(0.25)
+        time.sleep(0.5)
     raise BackupError(
         f"Mem0 API is still responding at {mem0_url}; stop every foreground or unmanaged server"
     )
@@ -511,9 +526,12 @@ def verify_restored_state(
 ) -> None:
     expected_qdrant = manifest.get("qdrant") or {}
     actual_qdrant = qdrant_metadata(qdrant_url, collection)
-    for field in ("points_count", "vectors"):
-        if actual_qdrant.get(field) != expected_qdrant.get(field):
-            raise BackupError(f"restored Qdrant {field} does not match manifest")
+    if actual_qdrant.get("points_count") != expected_qdrant.get("points_count"):
+        raise BackupError("restored Qdrant points_count does not match manifest")
+    if vector_signature(actual_qdrant.get("vectors")) != vector_signature(
+        expected_qdrant.get("vectors")
+    ):
+        raise BackupError("restored Qdrant vector shape does not match manifest")
     if sqlite_counts(history_db) != (manifest.get("sqlite") or {}).get("rows"):
         raise BackupError("restored SQLite row counts do not match manifest")
 
@@ -530,7 +548,26 @@ def read_restore_marker() -> Optional[dict[str, Any]]:
         raise BackupError(f"invalid restore marker: {marker_path}: {exc}") from exc
     if marker.get("schema_version") != 1:
         raise BackupError(f"unsupported restore marker: {marker_path}")
+    try:
+        parse_generation(marker["target_generation"])
+        parse_generation(marker["rollback_generation"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BackupError(f"invalid restore marker generations: {marker_path}") from exc
+    if marker.get("phase") not in {"qdrant", "history"}:
+        raise BackupError(f"invalid restore marker phase: {marker_path}")
     return marker
+
+
+def vector_signature(vectors: Any) -> Any:
+    if not isinstance(vectors, dict):
+        return vectors
+    if "size" in vectors:
+        return {field: vectors.get(field) for field in ("size", "distance")}
+    return {
+        name: {field: config.get(field) for field in ("size", "distance")}
+        for name, config in vectors.items()
+        if isinstance(config, dict)
+    }
 
 
 def write_restore_marker(target: str, rollback: Path, phase: str) -> None:
@@ -541,7 +578,6 @@ def write_restore_marker(target: str, rollback: Path, phase: str) -> None:
         "schema_version": 1,
         "target_generation": target,
         "rollback_generation": rollback.name,
-        "rollback_path": str(rollback),
         "phase": phase,
     }
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, delete=False) as handle:
@@ -567,6 +603,8 @@ def restore(name: str, *, confirmed: bool) -> Path:
                 f"incomplete restore requires rollback generation {rollback_name}; refusing {name}"
             )
         rollback = restore_root() / "rollback" / name
+
+    require_managed_runtime()
 
     with restore_generation(name) as generation:
         manifest = verify(generation)
@@ -759,7 +797,7 @@ def run() -> None:
 
 def main() -> int:
     signal.signal(signal.SIGTERM, terminate)
-    load_env_file(Path.home() / ".config" / "mem0" / ".env")
+    load_runtime_env(RUNTIME_DIR)
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("run", help="Run the due-aware backup workflow")

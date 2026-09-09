@@ -216,6 +216,28 @@ class RestoreTest(unittest.TestCase):
 
         restore_generation.assert_not_called()
 
+    def test_restore_requires_installed_launchd_managed_runtime(self):
+        with (
+            mock.patch.dict(os.environ, {"MEM0_HOME": "/different/runtime"}),
+            self.assertRaisesRegex(mem0_backup.BackupError, "installed MEM0_HOME"),
+        ):
+            mem0_backup.require_managed_runtime()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = Path(temp_dir)
+            with (
+                mock.patch.object(mem0_backup, "RUNTIME_DIR", runtime),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "MEM0_HOME": str(runtime),
+                        "MEM0_LAUNCHD_PLIST": str(runtime / "missing.plist"),
+                    },
+                ),
+                self.assertRaisesRegex(mem0_backup.BackupError, "launchd-managed API"),
+            ):
+                mem0_backup.require_managed_runtime()
+
     def test_qdrant_restore_upload_is_pinned_to_snapshot_checksum(self):
         generation = Path("/safe/generation")
         manifest = {"files": {"qdrant.snapshot": {"sha256": "abc123"}}}
@@ -260,6 +282,7 @@ class RestoreTest(unittest.TestCase):
                     "qdrant_metadata",
                     return_value={"version": "1.15.4"},
                 ),
+                mock.patch.object(mem0_backup, "require_managed_runtime"),
                 mock.patch.object(mem0_backup, "control_stack", side_effect=control),
                 mock.patch.object(
                     mem0_backup, "wait_for_mem0_down", side_effect=lambda *_args: events.append("api-down")
@@ -323,6 +346,7 @@ class RestoreTest(unittest.TestCase):
                     "qdrant_metadata",
                     return_value={"version": "1.15.4"},
                 ),
+                mock.patch.object(mem0_backup, "require_managed_runtime"),
                 mock.patch.object(mem0_backup, "control_stack", side_effect=actions.append),
                 mock.patch.object(mem0_backup, "wait_for_mem0_down"),
                 mock.patch.object(mem0_backup, "start_qdrant"),
@@ -387,6 +411,7 @@ class RestoreTest(unittest.TestCase):
                     side_effect=mem0_backup.BackupError("collection unavailable"),
                 ) as metadata,
                 mock.patch.object(mem0_backup, "control_stack"),
+                mock.patch.object(mem0_backup, "require_managed_runtime"),
                 mock.patch.object(mem0_backup, "wait_for_mem0_down"),
                 mock.patch.object(mem0_backup, "start_qdrant"),
                 mock.patch.object(mem0_backup, "wait_for_qdrant", return_value="1.15.4"),
@@ -399,6 +424,27 @@ class RestoreTest(unittest.TestCase):
 
             metadata.assert_not_called()
             self.assertFalse(marker_path.exists())
+
+    def test_restored_vector_verification_ignores_non_shape_fields(self):
+        manifest = {
+            "qdrant": {
+                "points_count": 1,
+                "vectors": {"size": 2560, "distance": "Cosine"},
+            },
+            "sqlite": {"rows": {"history": 1}},
+        }
+        with (
+            mock.patch.object(
+                mem0_backup,
+                "qdrant_metadata",
+                return_value={
+                    "points_count": 1,
+                    "vectors": {"size": 2560, "distance": "Cosine", "on_disk": True},
+                },
+            ),
+            mock.patch.object(mem0_backup, "sqlite_counts", return_value={"history": 1}),
+        ):
+            mem0_backup.verify_restored_state(manifest, "http://127.0.0.1:6333", "mem0", Path("/history.db"))
 
     def test_restore_history_replaces_database_and_removes_sidecars(self):
         with tempfile.TemporaryDirectory() as temp_dir:

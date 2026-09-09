@@ -9,6 +9,9 @@ generation. It is not scheduled and does not select a generation automatically.
 - Start from a healthy local installation. The command requires the current
   Qdrant collection and history database so it can capture the exact pre-restore
   state as a rollback generation.
+- Run the installed command from `MEM0_HOME` with its launchd API job configured.
+  Running `runtime/bin/mem0-backup` directly from a repository checkout is
+  rejected because its Compose project and service controller may differ.
 - Keep the configured backup remote reachable when the target generation is not
   already in local staging.
 - Use a Qdrant version supported by its snapshot compatibility policy. The
@@ -45,8 +48,8 @@ The command performs these guarded steps:
 4. Write `MEM0_RESTORE_STATE_DIR/in-progress.json`, restore Qdrant through its
    snapshot upload API, atomically replace SQLite, and remove stale SQLite
    sidecars.
-5. Compare the live collection's point count and vector configuration plus the
-   live SQLite table counts with the backup manifest.
+5. Compare the live collection's point count and vector shape (size and distance)
+   plus the live SQLite table counts with the backup manifest.
 6. Clear the marker and restart the full stack only after both stores pass.
 
 The rollback generation is deliberately outside normal backup staging, so the
