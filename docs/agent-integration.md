@@ -6,6 +6,8 @@ Agent-specific newcomer guides:
   configuration, removal, and troubleshooting
 - [Claude Code](agents/claude.md) — official configuration contract and a
   **NOT TESTED LOCALLY** smoke-test procedure
+- [Antigravity CLI (AGY)](agents/agy.md) — locally tested HTTP registration,
+  documented-but-untested recall check, removal, and troubleshooting
 
 Direct MCP is the supported transport. It gives Codex, Claude Code, OpenCode,
 and AGY the same loopback-only Mem0 tools without installing a Mem0 Cloud
@@ -76,7 +78,8 @@ Then inspect the active session:
 - Claude Code: `claude mcp get mem0`, `claude mcp list`, and the in-session
   `/mcp` view should report `Connected`; this path is **NOT TESTED LOCALLY**.
 - OpenCode: `opencode mcp list` must show `mem0` as connected.
-- AGY: `agy mcp list` must show an enabled HTTP server named `mem0`.
+- AGY: `agy mcp list` must show an enabled HTTP server named `mem0`; this checks
+  saved configuration, not live reachability or a model tool call.
 
 Finally ask the agent to call `search_memories` for a real prior decision. Direct
 MCP makes tools available; it does not guarantee that a model will call one on
