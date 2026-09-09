@@ -155,7 +155,7 @@ currently tested release:
 
 ```bash
 npx skills add \
-  https://github.com/Salada/bring-your-own-local-mac-mem0/tree/v0.1.2 \
+  https://github.com/Salada/bring-your-own-local-mac-mem0/tree/v0.1.3 \
   --skill mem0-local-admin --full-depth -g -y --copy
 ```
 
