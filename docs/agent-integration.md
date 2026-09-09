@@ -1,5 +1,10 @@
 # Connect coding agents
 
+Agent-specific newcomer guides:
+
+- [OpenCode](agents/opencode.md) — locally tested setup, recall check, versioned
+  configuration, removal, and troubleshooting
+
 Direct MCP is the supported transport. It gives Codex, OpenCode, and AGY the
 same loopback-only Mem0 tools without installing a Mem0 Cloud plugin. For Codex,
 the recommended reliable-recall baseline also includes the bounded lifecycle
