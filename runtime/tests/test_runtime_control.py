@@ -128,6 +128,51 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
         self.assertIn("their use remains model-selected", result.stdout)
         self.assertIn("codex-hooks install", result.stdout)
 
+    def test_agents_remove_continues_after_opencode_guidance(self):
+        for agent in ("codex", "opencode", "agy"):
+            self._command(
+                agent,
+                f"""#!/bin/sh
+printf '{agent} %s\\n' "$*" >> "$FAKE_LOG"
+""",
+            )
+
+        result = subprocess.run(
+            [str(CTL), "agents", "remove"],
+            env=self._env(),
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            self.log.read_text().splitlines(),
+            ["codex mcp remove mem0", "agy mcp remove mem0"],
+        )
+        self.assertIn("remove mcp.mem0", result.stderr)
+
+    def test_codex_hooks_uses_runtime_python(self):
+        mem0_home = self.root / "mem0"
+        runtime_python = mem0_home / ".venv" / "bin" / "python"
+        runtime_python.parent.mkdir(parents=True)
+        runtime_python.write_text(
+            '#!/bin/sh\nprintf \'python %s\\n\' "$*" >> "$FAKE_LOG"\n',
+            encoding="utf-8",
+        )
+        runtime_python.chmod(0o755)
+        (mem0_home / "codex_hook.py").touch()
+
+        subprocess.run(
+            [str(CTL), "codex-hooks", "status"],
+            check=True,
+            env=self._env(MEM0_HOME=str(mem0_home)),
+        )
+
+        self.assertEqual(
+            self.log.read_text().splitlines(),
+            [f"python {mem0_home / 'codex_hook.py'} status"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

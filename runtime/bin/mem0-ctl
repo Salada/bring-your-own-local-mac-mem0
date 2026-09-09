@@ -152,6 +152,7 @@ case "$cmd" in
         mcp_url="${MEM0_MCP_URL:-http://127.0.0.1:11888/mcp}"
         found=0
         configured_codex=0
+        remove_incomplete=0
         for agent in "$@"; do
             case "$agent" in
                 codex|opencode|agy) ;;
@@ -196,7 +197,7 @@ case "$cmd" in
                     ;;
                 remove:opencode)
                     echo "OpenCode has no MCP remove command; remove mcp.mem0 from its config file." >&2
-                    exit 2
+                    remove_incomplete=1
                     ;;
                 *)
                     echo "Error: unsupported agents action '$action'." >&2
@@ -213,13 +214,21 @@ case "$cmd" in
             echo "For reliable recall and capture, run: $0 codex-hooks install"
             echo "Then restart Codex and review the commands with /hooks."
         fi
+        if [ "$remove_incomplete" -eq 1 ]; then
+            exit 2
+        fi
         ;;
 
     codex-hooks)
         hook_action="${1:-status}"
         case "$hook_action" in
             install|status|uninstall)
-                exec /usr/bin/python3 "$MEM0_HOME/codex_hook.py" "$hook_action"
+                runtime_python="${MEM0_PYTHON:-$MEM0_HOME/.venv/bin/python}"
+                if [ ! -x "$runtime_python" ]; then
+                    echo "Error: runtime Python not found at $runtime_python; run 'uv sync' in $MEM0_HOME." >&2
+                    exit 1
+                fi
+                exec "$runtime_python" "$MEM0_HOME/codex_hook.py" "$hook_action"
                 ;;
             *)
                 echo "Error: unsupported codex-hooks action '$hook_action'." >&2

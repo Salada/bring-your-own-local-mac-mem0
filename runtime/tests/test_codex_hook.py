@@ -1,4 +1,6 @@
 import json
+import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -81,6 +83,9 @@ class CodexHookTest(unittest.TestCase):
             self.assertTrue(configure_hooks(path, script, install=True))
             self.assertFalse(configure_hooks(path, script, install=True))
             self.assertTrue(hooks_installed(path))
+            installed = json.loads(path.read_text(encoding="utf-8"))
+            command = installed["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            self.assertEqual(command, f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} search")
             self.assertTrue(configure_hooks(path, script, install=False))
 
             data = json.loads(path.read_text(encoding="utf-8"))

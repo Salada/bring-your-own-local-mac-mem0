@@ -80,7 +80,7 @@ def configure_hooks(path: Path, script: Path, *, install: bool) -> bool:
         groups = _without_mem0_hook(hooks.get(event), mode)
         if install:
             entry: Dict[str, Any] = {
-                "command": f"/usr/bin/python3 {shlex.quote(str(script))} {mode}",
+                "command": f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} {mode}",
                 "timeout": timeout,
                 "type": "command",
             }
@@ -154,7 +154,7 @@ def search_context(
     response = request(
         "/v1/memories/search",
         {"query": prompt, "user_id": USER_ID, "limit": 6},
-        10,
+        8,
     )
     lines = []
     for item in response.get("results", []):
