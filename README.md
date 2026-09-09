@@ -25,7 +25,8 @@ The repository is intentionally split into two paths:
 | Goal | Start here |
 | --- | --- |
 | Install or operate the local stack | [`runtime/README.md`](runtime/README.md) |
-| Install the explicit Codex administration skill | [`skills/mem0-local-admin/README.md`](skills/mem0-local-admin/README.md) |
+| Connect Codex, OpenCode, or AGY | [`docs/agent-integration.md`](docs/agent-integration.md) |
+| Optionally install the Codex administration skill | [`skills/mem0-local-admin/README.md`](skills/mem0-local-admin/README.md) |
 
 ## Safety defaults
 
