@@ -8,9 +8,11 @@ Agent-specific newcomer guides:
   **NOT TESTED LOCALLY** smoke-test procedure
 - [Antigravity CLI (AGY)](agents/agy.md) — locally tested HTTP registration,
   documented-but-untested recall check, removal, and troubleshooting
+- [Hermes Agent](agents/hermes.md) — locally tested discovery and connectivity,
+  interactive setup, removal, and native-memory distinction
 
 Direct MCP is the supported transport. It gives Codex, Claude Code, OpenCode,
-and AGY the same loopback-only Mem0 tools without installing a Mem0 Cloud
+AGY, and Hermes the same loopback-only Mem0 tools without installing a Mem0 Cloud
 plugin. For Codex, the recommended reliable-recall baseline also includes the
 bounded lifecycle hooks below. The `mem0-local-admin` skill remains a separate
 opt-in.
@@ -26,10 +28,12 @@ $HOME/.config/mem0/bin/mem0-ctl codex-hooks install
 ```
 
 The second command detects installed copies of `codex`, `claude`, `opencode`,
-and `agy`, then adds or updates a server named `mem0` at
+`agy`, and `hermes`, then adds or updates a server named `mem0` at
 `http://127.0.0.1:11888/mcp`. The third command is recommended when Codex is
 installed; review and trust the hooks after restart as described below. Select
-clients explicitly when necessary:
+clients explicitly when necessary. If Hermes is installed, its native setup is
+interactive and pauses the all-agent command for authentication and tool
+selection; answer as described in the [Hermes guide](agents/hermes.md).
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl agents configure codex agy
@@ -39,10 +43,11 @@ Set `MEM0_MCP_URL` only when the loopback port or path was deliberately changed.
 Do not point this unauthenticated local deployment at a public interface.
 
 The helper delegates configuration to each client's native command instead of
-editing evolving config formats. Codex CLI 0.153.4, OpenCode 1.18.29, and AGY
-1.1.27 were checked locally. The Claude command follows its official contract
-but is **NOT TESTED LOCALLY**. The helper removes an existing user-scoped
-`mem0` entry before adding it because Claude Code rejects a duplicate name:
+editing evolving config formats. Codex CLI 0.153.4, OpenCode 1.18.29, AGY
+1.1.27, and Hermes 0.21.0 were checked locally. The Claude command follows its
+official contract but is **NOT TESTED LOCALLY**. The helper removes an existing
+user-scoped `mem0` entry before adding it because Claude Code rejects a
+duplicate name:
 
 ```bash
 codex mcp add mem0 --url http://127.0.0.1:11888/mcp
@@ -50,16 +55,19 @@ claude mcp remove mem0 --scope user  # ignored by the helper when absent
 claude mcp add --transport http mem0 --scope user http://127.0.0.1:11888/mcp
 opencode mcp add mem0 --url http://127.0.0.1:11888/mcp
 agy mcp add --type http mem0 http://127.0.0.1:11888/mcp
+hermes mcp add mem0 --url http://127.0.0.1:11888/mcp  # interactive
 ```
 
 Codex stores the connection in `~/.codex/config.toml`; its desktop app, CLI,
 and IDE extension share that configuration. Claude Code stores a user-scoped
 server in `~/.claude.json`. OpenCode stores it under the `mcp` object in its
 effective `opencode.json`/`opencode.jsonc`. AGY owns its own MCP configuration;
-use `agy mcp` rather than editing that file directly. See the
+use `agy mcp` rather than editing that file directly. Hermes stores MCP entries
+per profile; use `hermes mcp` rather than editing its config directly. See the
 [Codex MCP documentation](https://developers.openai.com/codex/mcp),
 [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp), and
-[OpenCode MCP documentation](https://opencode.ai/docs/mcp-servers/).
+[OpenCode MCP documentation](https://opencode.ai/docs/mcp-servers/), and the
+[Hermes MCP documentation](https://nousresearch.github.io/hermes-agent/docs/user-guide/features/mcp).
 
 ## Restart and verify
 
@@ -80,6 +88,8 @@ Then inspect the active session:
 - OpenCode: `opencode mcp list` must show `mem0` as connected.
 - AGY: `agy mcp list` must show an enabled HTTP server named `mem0`; this checks
   saved configuration, not live reachability or a model tool call.
+- Hermes: `hermes mcp test mem0` must report `Auth: none`, the exact loopback
+  URL, a successful connection, and the discovered tools.
 
 Finally ask the agent to call `search_memories` for a real prior decision. Direct
 MCP makes tools available; it does not guarantee that a model will call one on
@@ -131,7 +141,7 @@ configuration. To remove only these two hooks:
 $HOME/.config/mem0/bin/mem0-ctl codex-hooks uninstall
 ```
 
-Claude Code, OpenCode, and AGY receive Direct MCP only. A project may add a
+Claude Code, OpenCode, AGY, and Hermes receive Direct MCP only. A project may add a
 short instruction such as “search Mem0 for relevant past decisions before
 changing code,” but an instruction is still model-driven rather than
 deterministic lifecycle automation.
@@ -177,6 +187,7 @@ Disconnecting an agent does not delete stored memories:
 codex mcp remove mem0
 claude mcp remove mem0 --scope user
 agy mcp remove mem0
+hermes mcp remove mem0
 ```
 
 OpenCode 1.18.29 has no `mcp remove` command. Remove only the `mem0` entry from

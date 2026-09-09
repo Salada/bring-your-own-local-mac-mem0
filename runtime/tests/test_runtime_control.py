@@ -112,6 +112,12 @@ printf 'opencode %s\\n' "$*" >> "$FAKE_LOG"
 printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
 """,
         )
+        self._command(
+            "hermes",
+            """#!/bin/sh
+printf 'hermes %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
 
         result = subprocess.run(
             [str(CTL), "agents", "configure"],
@@ -131,13 +137,14 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
                 "claude mcp add --transport http mem0 --scope user http://127.0.0.1:9999/mcp",
                 "opencode mcp add mem0 --url http://127.0.0.1:9999/mcp",
                 "agy mcp add --type http mem0 http://127.0.0.1:9999/mcp",
+                "hermes mcp add mem0 --url http://127.0.0.1:9999/mcp",
             ],
         )
         self.assertIn("their use remains model-selected", result.stdout)
         self.assertIn("codex-hooks install", result.stdout)
 
     def test_agents_remove_continues_after_opencode_guidance(self):
-        for agent in ("codex", "claude", "opencode", "agy"):
+        for agent in ("codex", "claude", "opencode", "agy", "hermes"):
             self._command(
                 agent,
                 f"""#!/bin/sh
@@ -159,9 +166,28 @@ printf '{agent} %s\\n' "$*" >> "$FAKE_LOG"
                 "codex mcp remove mem0",
                 "claude mcp remove mem0 --scope user",
                 "agy mcp remove mem0",
+                "hermes mcp remove mem0",
             ],
         )
         self.assertIn("remove mcp.mem0", result.stderr)
+
+    def test_agents_status_uses_hermes_connectivity_probe(self):
+        self._command(
+            "hermes",
+            """#!/bin/sh
+printf 'hermes %s\\n' "$*" >> "$FAKE_LOG"
+""",
+        )
+
+        subprocess.run(
+            [str(CTL), "agents", "status", "hermes"],
+            check=True,
+            env=self._env(),
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(self.log.read_text(), "hermes mcp test mem0\n")
 
     def test_codex_hooks_uses_runtime_python(self):
         mem0_home = self.root / "mem0"
