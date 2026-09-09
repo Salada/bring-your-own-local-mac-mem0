@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -51,9 +52,9 @@ class GenerationTest(unittest.TestCase):
 
 
 class LocalBackupTest(unittest.TestCase):
-    def make_generation(self, root: Path) -> Path:
-        generation = root / "mem0-2026-09-07T03:00:00+00:00"
-        generation.mkdir()
+    def make_generation(self, root: Path, name: str = "mem0-2026-09-07T03:00:00+00:00") -> Path:
+        generation = root / name
+        generation.mkdir(parents=True)
         database_path = generation / "history.db"
         database = sqlite3.connect(database_path)
         database.execute("CREATE TABLE history (id INTEGER PRIMARY KEY, value TEXT)")
@@ -71,8 +72,15 @@ class LocalBackupTest(unittest.TestCase):
         manifest = {
             "schema_version": 1,
             "generation": generation.name,
-            "created_at": "2026-09-07T03:00:00+00:00",
+            "created_at": generation.name.removeprefix("mem0-"),
             "timezone": "UTC",
+            "qdrant": {
+                "version": "1.15.4",
+                "collection": "mem0",
+                "points_count": 1,
+                "vectors": {"size": 2560, "distance": "Cosine"},
+            },
+            "sqlite": {"rows": {"history": 1}},
             "files": files,
         }
         (generation / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -172,7 +180,7 @@ class LocalBackupTest(unittest.TestCase):
                 "with mutation_lock():\n"
                 "    print('acquired', flush=True)\n"
             )
-            with mock.patch.object(backup_lock, "LOCK_PATH", lock_path):
+            with mock.patch.dict(os.environ, {"MEM0_WRITE_LOCK_PATH": str(lock_path)}):
                 with backup_lock.backup_lock():
                     child = subprocess.Popen(
                         [sys.executable, "-c", child_code],
@@ -188,6 +196,241 @@ class LocalBackupTest(unittest.TestCase):
 
             self.assertEqual(child.returncode, 0, stderr)
             self.assertEqual(stdout.strip(), "acquired")
+
+
+class RestoreTest(unittest.TestCase):
+    def test_qdrant_snapshot_version_gate(self):
+        for current in ("1.15.4", "1.15.9", "1.16.0"):
+            with self.subTest(current=current):
+                mem0_backup.require_qdrant_compatibility("1.15.4", current)
+        for current in ("1.15.3", "1.17.0", "2.15.4"):
+            with self.subTest(current=current), self.assertRaises(mem0_backup.BackupError):
+                mem0_backup.require_qdrant_compatibility("1.15.4", current)
+
+    def test_restore_requires_explicit_yes_before_lookup(self):
+        with (
+            mock.patch.object(mem0_backup, "restore_generation") as restore_generation,
+            self.assertRaisesRegex(mem0_backup.BackupError, "pass --yes"),
+        ):
+            mem0_backup.restore("mem0-2026-09-07T03:00:00+00:00", confirmed=False)
+
+        restore_generation.assert_not_called()
+
+    def test_qdrant_restore_upload_is_pinned_to_snapshot_checksum(self):
+        generation = Path("/safe/generation")
+        manifest = {"files": {"qdrant.snapshot": {"sha256": "abc123"}}}
+        response = subprocess.CompletedProcess(["curl"], 0, stdout='{"result":true,"status":"ok"}', stderr="")
+        with mock.patch.object(mem0_backup, "run_checked", return_value=response) as run:
+            mem0_backup.recover_qdrant(generation, "http://127.0.0.1:6333", "mem0/local", manifest)
+
+        command = run.call_args.args[0]
+        self.assertIn(f"snapshot=@{generation / 'qdrant.snapshot'}", command)
+        self.assertIn("/collections/mem0%2Flocal/snapshots/upload?", command[-1])
+        self.assertIn("priority=snapshot", command[-1])
+        self.assertIn("checksum=abc123", command[-1])
+
+    def test_restore_stops_stack_before_rollback_capture_and_restarts_after_verification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = LocalBackupTest().make_generation(root / "staging")
+            rollback = LocalBackupTest().make_generation(
+                root / "restore" / "rollback", "mem0-2026-09-09T01:00:00+00:00"
+            )
+            history = root / "history.db"
+            events = []
+
+            def control(action):
+                events.append(action)
+
+            def capture(**_kwargs):
+                events.append("capture")
+                return rollback
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "MEM0_BACKUP_STAGING_DIR": str(target.parent),
+                        "MEM0_RESTORE_STATE_DIR": str(root / "restore"),
+                        "MEM0_HISTORY_DB": str(history),
+                    },
+                ),
+                mock.patch.object(
+                    mem0_backup,
+                    "qdrant_metadata",
+                    return_value={"version": "1.15.4"},
+                ),
+                mock.patch.object(mem0_backup, "control_stack", side_effect=control),
+                mock.patch.object(
+                    mem0_backup, "wait_for_mem0_down", side_effect=lambda *_args: events.append("api-down")
+                ),
+                mock.patch.object(mem0_backup, "start_qdrant", side_effect=lambda: events.append("qdrant")),
+                mock.patch.object(mem0_backup, "wait_for_qdrant", return_value="1.15.4"),
+                mock.patch.object(mem0_backup, "capture", side_effect=capture),
+                mock.patch.object(mem0_backup, "maintenance_lock", return_value=nullcontext()),
+                mock.patch.object(
+                    mem0_backup,
+                    "recover_qdrant",
+                    side_effect=lambda *_args: events.append("restore-qdrant"),
+                ),
+                mock.patch.object(
+                    mem0_backup,
+                    "restore_history",
+                    side_effect=lambda *_args: events.append("restore-history"),
+                ),
+                mock.patch.object(
+                    mem0_backup,
+                    "verify_restored_state",
+                    side_effect=lambda *_args: events.append("verify"),
+                ),
+            ):
+                result = mem0_backup.restore(target.name, confirmed=True)
+
+            self.assertEqual(result, rollback)
+            self.assertEqual(
+                events,
+                [
+                    "stop",
+                    "api-down",
+                    "qdrant",
+                    "capture",
+                    "restore-qdrant",
+                    "restore-history",
+                    "verify",
+                    "start",
+                ],
+            )
+            self.assertFalse((root / "restore" / "in-progress.json").exists())
+
+    def test_failed_restore_keeps_marker_and_api_down_for_exact_rollback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = LocalBackupTest().make_generation(root / "staging")
+            rollback = LocalBackupTest().make_generation(
+                root / "restore" / "rollback", "mem0-2026-09-09T01:00:00+00:00"
+            )
+            actions = []
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "MEM0_BACKUP_STAGING_DIR": str(target.parent),
+                        "MEM0_RESTORE_STATE_DIR": str(root / "restore"),
+                    },
+                ),
+                mock.patch.object(
+                    mem0_backup,
+                    "qdrant_metadata",
+                    return_value={"version": "1.15.4"},
+                ),
+                mock.patch.object(mem0_backup, "control_stack", side_effect=actions.append),
+                mock.patch.object(mem0_backup, "wait_for_mem0_down"),
+                mock.patch.object(mem0_backup, "start_qdrant"),
+                mock.patch.object(mem0_backup, "wait_for_qdrant", return_value="1.15.4"),
+                mock.patch.object(mem0_backup, "capture", return_value=rollback),
+                mock.patch.object(mem0_backup, "maintenance_lock", return_value=nullcontext()),
+                mock.patch.object(
+                    mem0_backup,
+                    "recover_qdrant",
+                    side_effect=mem0_backup.BackupError("injected failure"),
+                ),
+                self.assertRaisesRegex(mem0_backup.BackupError, "rollback generation"),
+            ):
+                mem0_backup.restore(target.name, confirmed=True)
+
+            marker_path = root / "restore" / "in-progress.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(actions, ["stop"])
+            self.assertEqual(marker["rollback_generation"], rollback.name)
+            self.assertEqual(marker["phase"], "qdrant")
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"MEM0_RESTORE_STATE_DIR": str(root / "restore")},
+                ),
+                mock.patch.object(mem0_backup, "restore_generation") as restore_generation,
+            ):
+                with self.assertRaises(mem0_backup.BackupError) as raised:
+                    mem0_backup.restore(target.name, confirmed=True)
+            self.assertIn(rollback.name, str(raised.exception))
+            restore_generation.assert_not_called()
+
+    def test_incomplete_restore_can_recover_when_live_collection_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rollback = LocalBackupTest().make_generation(
+                root / "restore" / "rollback", "mem0-2026-09-09T01:00:00+00:00"
+            )
+            marker_path = root / "restore" / "in-progress.json"
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "target_generation": "mem0-2026-09-07T03:00:00+00:00",
+                        "rollback_generation": rollback.name,
+                        "rollback_path": str(rollback),
+                        "phase": "history",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"MEM0_RESTORE_STATE_DIR": str(root / "restore")},
+                ),
+                mock.patch.object(
+                    mem0_backup,
+                    "qdrant_metadata",
+                    side_effect=mem0_backup.BackupError("collection unavailable"),
+                ) as metadata,
+                mock.patch.object(mem0_backup, "control_stack"),
+                mock.patch.object(mem0_backup, "wait_for_mem0_down"),
+                mock.patch.object(mem0_backup, "start_qdrant"),
+                mock.patch.object(mem0_backup, "wait_for_qdrant", return_value="1.15.4"),
+                mock.patch.object(mem0_backup, "maintenance_lock", return_value=nullcontext()),
+                mock.patch.object(mem0_backup, "recover_qdrant"),
+                mock.patch.object(mem0_backup, "restore_history"),
+                mock.patch.object(mem0_backup, "verify_restored_state"),
+            ):
+                self.assertEqual(mem0_backup.restore(rollback.name, confirmed=True), rollback)
+
+            metadata.assert_not_called()
+            self.assertFalse(marker_path.exists())
+
+    def test_restore_history_replaces_database_and_removes_sidecars(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            generation = LocalBackupTest().make_generation(root / "generation")
+            live = root / "history.db"
+            database = sqlite3.connect(live)
+            database.execute("CREATE TABLE obsolete (id INTEGER PRIMARY KEY)")
+            database.commit()
+            database.close()
+            for suffix in ("-wal", "-shm", "-journal"):
+                live.with_name(live.name + suffix).write_bytes(b"stale")
+
+            mem0_backup.restore_history(generation, live, {"history": 1})
+
+            self.assertEqual(mem0_backup.sqlite_counts(live), {"history": 1})
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse(live.with_name(live.name + suffix).exists())
+
+    def test_restore_state_paths_follow_environment_after_import(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "MEM0_WRITE_LOCK_PATH": str(root / "custom.lock"),
+                    "MEM0_RESTORE_STATE_DIR": str(root / "restore"),
+                },
+            ):
+                with backup_lock.backup_lock():
+                    self.assertTrue((root / "custom.lock").exists())
+                self.assertEqual(backup_lock.restore_marker(), root / "restore" / "in-progress.json")
 
 
 class RemotePolicyTest(unittest.TestCase):

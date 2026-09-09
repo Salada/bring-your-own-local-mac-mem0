@@ -8,22 +8,38 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-LOCK_PATH = Path(
-    os.environ.get(
-        "MEM0_WRITE_LOCK_PATH",
-        Path.home() / ".local" / "state" / "mem0-backup" / "write.lock",
+
+def lock_path() -> Path:
+    return Path(
+        os.environ.get(
+            "MEM0_WRITE_LOCK_PATH",
+            Path.home() / ".local" / "state" / "mem0-backup" / "write.lock",
+        )
     )
-)
+
+
+def restore_root() -> Path:
+    return Path(
+        os.environ.get(
+            "MEM0_RESTORE_STATE_DIR",
+            Path.home() / ".local" / "state" / "mem0-backup" / "restore",
+        )
+    )
+
+
+def restore_marker() -> Path:
+    return restore_root() / "in-progress.json"
 
 
 @contextmanager
 def memory_lock(*, exclusive: bool) -> Iterator[None]:
     """Hold the process-wide Mem0 data lock in shared or exclusive mode."""
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(LOCK_PATH, flags, 0o600)
+    fd = os.open(path, flags, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         yield

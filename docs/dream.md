@@ -29,9 +29,10 @@ mem0-admin dream --auto --app-id PROJECT
 ## Approval boundary
 
 Every mutating Dream run requires explicit human approval of the exact scope and
-plan. Dream is never scheduled. Unattended execution remains prohibited unless a
-separate future safety decision introduces and validates an adequate recovery
-mechanism.
+plan. Dream is never scheduled. `mem0-backup restore` provides an operator-driven
+rollback path, but the project does not ship a recovery drill or a separately
+reviewed policy for unattended cleanup. The restore command therefore does not
+change Dream's approval boundary.
 
 The command stops on incomplete pagination, backup failure, revision changes,
 scope changes, partial results, or missing confirmation. Use `review` for broader

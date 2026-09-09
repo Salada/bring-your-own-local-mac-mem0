@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create, verify, publish, and rotate consistent Mem0 backups."""
+"""Create, verify, publish, restore, and rotate consistent Mem0 backups."""
 
 from __future__ import annotations
 
@@ -14,15 +14,23 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_DIR))
+from backup_lock import (  # noqa: E402
+    backup_lock,
+    maintenance_lock,
+    restore_marker,
+    restore_root,
+)
 from env_loader import load_env_file  # noqa: E402
 
 BACKUP_TZ = timezone.utc
@@ -87,13 +95,19 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def http_json(method: str, url: str, data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def http_json(
+    method: str,
+    url: str,
+    data: Optional[dict[str, Any]] = None,
+    *,
+    timeout: float = 60,
+) -> dict[str, Any]:
     body = json.dumps(data).encode() if data is not None else None
     request = urllib.request.Request(url, data=body, method=method)
     if body is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise BackupError(f"{method} {url} failed: {exc}") from exc
@@ -182,16 +196,23 @@ def copy_quiesced_sqlite(source_path: Path, destination: Path) -> dict[str, int]
 
 
 def qdrant_metadata(qdrant_url: str, collection: str) -> dict[str, Any]:
-    service = http_json("GET", f"{qdrant_url}/")
+    version = qdrant_service_version(qdrant_url)
     info = http_json("GET", f"{qdrant_url}/collections/{urllib.parse.quote(collection, safe='')}")
     result = info.get("result") or {}
     vectors = (((result.get("config") or {}).get("params") or {}).get("vectors"))
     return {
-        "version": service.get("version"),
+        "version": version,
         "collection": collection,
         "points_count": result.get("points_count"),
         "vectors": vectors,
     }
+
+
+def qdrant_service_version(qdrant_url: str, *, timeout: float = 60) -> str:
+    version = http_json("GET", f"{qdrant_url}/", timeout=timeout).get("version")
+    if not isinstance(version, str):
+        raise BackupError("Qdrant service returned no version")
+    return version
 
 
 def create_qdrant_snapshot(qdrant_url: str, collection: str) -> str:
@@ -223,12 +244,10 @@ def mem0_version(mem0_url: str) -> Optional[str]:
         return None
 
 
-def capture(now: Optional[datetime] = None) -> Path:
-    from backup_lock import backup_lock
-
+def capture(now: Optional[datetime] = None, staging_root: Optional[Path] = None) -> Path:
     name = generation_name(now)
     parse_generation(name)
-    staging_root = Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
+    staging_root = staging_root or Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
     partial = staging_root / f"._partial-{name}"
     final = staging_root / name
     if partial.exists() or final.exists():
@@ -347,6 +366,260 @@ def rclone(*arguments: str, capture_output: bool = True) -> subprocess.Completed
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or str(exc)).strip()
         raise BackupError(f"rclone failed: {' '.join(command)}: {detail}") from exc
+
+
+def qdrant_version(version: Any) -> tuple[int, int, int]:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", str(version or ""))
+    if not match:
+        raise BackupError(f"invalid Qdrant version: {version!r}")
+    return tuple(int(part) for part in match.groups())
+
+
+def require_qdrant_compatibility(snapshot_version: Any, current_version: Any) -> None:
+    snapshot = qdrant_version(snapshot_version)
+    current = qdrant_version(current_version)
+    compatible = current[0] == snapshot[0] and (
+        (current[1] == snapshot[1] and current[2] >= snapshot[2]) or current[1] == snapshot[1] + 1
+    )
+    if not compatible:
+        raise BackupError(
+            f"Qdrant {current_version} cannot restore snapshot from {snapshot_version}; "
+            "use the same minor version at an equal/newer patch, or the next minor version"
+        )
+
+
+@contextmanager
+def restore_generation(name: str) -> Iterator[Path]:
+    try:
+        parse_generation(name)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
+    staging = Path(os.environ.get("MEM0_BACKUP_STAGING_DIR", DEFAULT_STAGING_ROOT))
+    for candidate in (restore_root() / "rollback" / name, staging / name):
+        if candidate.exists():
+            verify(candidate)
+            yield candidate
+            return
+    root = remote_root()
+    with tempfile.TemporaryDirectory(prefix="mem0-restore-") as temp_dir:
+        generation = Path(temp_dir) / name
+        generation.mkdir(mode=0o700)
+        rclone("copy", remote_join(root, name), str(generation), "--immutable")
+        verify(generation)
+        yield generation
+
+
+def run_checked(command: list[str], operation: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(command, check=True, text=True, capture_output=True)
+    except FileNotFoundError as exc:
+        raise BackupError(f"{operation} command not found: {command[0]}") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise BackupError(f"{operation} failed: {detail}") from exc
+
+
+def control_stack(action: str) -> None:
+    controller = RUNTIME_DIR / "bin" / "mem0-ctl"
+    if not controller.is_file():
+        raise BackupError(f"mem0-ctl not found: {controller}")
+    run_checked([str(controller), action], f"mem0-ctl {action}")
+
+
+def start_qdrant() -> None:
+    run_checked(
+        ["docker", "compose", "--project-directory", str(RUNTIME_DIR), "up", "-d", "qdrant"],
+        "starting Qdrant",
+    )
+
+
+def wait_for_qdrant(qdrant_url: str) -> str:
+    error: Optional[BackupError] = None
+    for _ in range(40):
+        try:
+            return qdrant_service_version(qdrant_url, timeout=0.5)
+        except BackupError as exc:
+            error = exc
+            time.sleep(0.25)
+    raise BackupError(f"Qdrant did not become ready: {error}")
+
+
+def wait_for_mem0_down(mem0_url: str) -> None:
+    for _ in range(40):
+        try:
+            http_json("GET", f"{mem0_url}/health", timeout=0.5)
+        except BackupError:
+            return
+        time.sleep(0.25)
+    raise BackupError(
+        f"Mem0 API is still responding at {mem0_url}; stop every foreground or unmanaged server"
+    )
+
+
+def recover_qdrant(generation: Path, qdrant_url: str, collection: str, manifest: dict[str, Any]) -> None:
+    snapshot = generation / "qdrant.snapshot"
+    checksum = manifest["files"]["qdrant.snapshot"]["sha256"]
+    encoded_collection = urllib.parse.quote(collection, safe="")
+    query = urllib.parse.urlencode({"wait": "true", "priority": "snapshot", "checksum": checksum})
+    response = run_checked(
+        [
+            "curl",
+            "--fail-with-body",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "600",
+            "--request",
+            "POST",
+            "--form",
+            f"snapshot=@{snapshot}",
+            f"{qdrant_url}/collections/{encoded_collection}/snapshots/upload?{query}",
+        ],
+        "Qdrant snapshot restore",
+    )
+    try:
+        result = json.loads(response.stdout)
+    except json.JSONDecodeError as exc:
+        raise BackupError(f"Qdrant snapshot restore returned invalid JSON: {response.stdout!r}") from exc
+    if result.get("status") != "ok" or result.get("result") is not True:
+        raise BackupError(f"Qdrant snapshot restore failed: {result}")
+
+
+def restore_history(generation: Path, history_db: Path, expected_rows: Any) -> None:
+    if not isinstance(expected_rows, dict):
+        raise BackupError("backup manifest has no SQLite row counts")
+    history_db.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{history_db.name}.restore-", dir=history_db.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        shutil.copyfile(generation / "history.db", temporary)
+        temporary.chmod(0o600)
+        if sqlite_counts(temporary) != expected_rows:
+            raise BackupError("restored SQLite row counts do not match manifest")
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        for suffix in ("-wal", "-shm", "-journal"):
+            history_db.with_name(history_db.name + suffix).unlink(missing_ok=True)
+        temporary.replace(history_db)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def verify_restored_state(
+    manifest: dict[str, Any], qdrant_url: str, collection: str, history_db: Path
+) -> None:
+    expected_qdrant = manifest.get("qdrant") or {}
+    actual_qdrant = qdrant_metadata(qdrant_url, collection)
+    for field in ("points_count", "vectors"):
+        if actual_qdrant.get(field) != expected_qdrant.get(field):
+            raise BackupError(f"restored Qdrant {field} does not match manifest")
+    if sqlite_counts(history_db) != (manifest.get("sqlite") or {}).get("rows"):
+        raise BackupError("restored SQLite row counts do not match manifest")
+
+
+def read_restore_marker() -> Optional[dict[str, Any]]:
+    marker_path = restore_marker()
+    if not marker_path.exists():
+        return None
+    if marker_path.is_symlink():
+        raise BackupError(f"unsafe restore marker: {marker_path}")
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackupError(f"invalid restore marker: {marker_path}: {exc}") from exc
+    if marker.get("schema_version") != 1:
+        raise BackupError(f"unsupported restore marker: {marker_path}")
+    return marker
+
+
+def write_restore_marker(target: str, rollback: Path, phase: str) -> None:
+    root = restore_root()
+    marker_path = restore_marker()
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "target_generation": target,
+        "rollback_generation": rollback.name,
+        "rollback_path": str(rollback),
+        "phase": phase,
+    }
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, delete=False) as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary = Path(handle.name)
+    temporary.chmod(0o600)
+    temporary.replace(marker_path)
+
+
+def restore(name: str, *, confirmed: bool) -> Path:
+    if not confirmed:
+        raise BackupError("restore is destructive; review the exact generation and pass --yes")
+
+    incomplete_restore = read_restore_marker()
+    rollback: Optional[Path] = None
+    if incomplete_restore:
+        rollback_name = incomplete_restore.get("rollback_generation")
+        if name != rollback_name:
+            raise BackupError(
+                f"incomplete restore requires rollback generation {rollback_name}; refusing {name}"
+            )
+        rollback = restore_root() / "rollback" / name
+
+    with restore_generation(name) as generation:
+        manifest = verify(generation)
+        collection = os.environ.get("MEM0_QDRANT_COLLECTION", DEFAULT_COLLECTION)
+        expected_qdrant = manifest.get("qdrant") or {}
+        if expected_qdrant.get("collection") != collection:
+            raise BackupError(
+                f"backup collection {expected_qdrant.get('collection')!r} does not match target {collection!r}"
+            )
+        qdrant_url = os.environ.get("MEM0_QDRANT_URL", DEFAULT_QDRANT_URL).rstrip("/")
+        if incomplete_restore is None:
+            current_qdrant = qdrant_metadata(qdrant_url, collection)
+            require_qdrant_compatibility(
+                expected_qdrant.get("version"), current_qdrant.get("version")
+            )
+        mem0_url = os.environ.get("MEM0_SERVER_URL", DEFAULT_MEM0_URL).rstrip("/")
+        history_db = Path(os.environ.get("MEM0_HISTORY_DB", DEFAULT_HISTORY_DB))
+
+        stop_attempted = False
+        restore_complete = False
+        try:
+            stop_attempted = True
+            control_stack("stop")
+            wait_for_mem0_down(mem0_url)
+            start_qdrant()
+            current_version = wait_for_qdrant(qdrant_url)
+            require_qdrant_compatibility(expected_qdrant.get("version"), current_version)
+            if rollback is None:
+                rollback = capture(staging_root=restore_root() / "rollback")
+            write_restore_marker(name, rollback, "qdrant")
+            with maintenance_lock():
+                recover_qdrant(generation, qdrant_url, collection, manifest)
+                write_restore_marker(name, rollback, "history")
+                restore_history(generation, history_db, (manifest.get("sqlite") or {}).get("rows"))
+                verify_restored_state(manifest, qdrant_url, collection, history_db)
+            restore_marker().unlink()
+            restore_complete = True
+            control_stack("start")
+            log(f"restored {name}; rollback generation: {rollback}")
+            return rollback
+        except BaseException as exc:
+            if stop_attempted and not restore_marker().exists():
+                try:
+                    control_stack("start")
+                except BackupError as restart_exc:
+                    log(f"WARNING: could not restart unchanged stack: {restart_exc}")
+            if isinstance(exc, BackupError) and restore_complete:
+                raise BackupError(
+                    f"restore completed, but Mem0 restart failed; rollback generation: {rollback}: {exc}"
+                ) from exc
+            if isinstance(exc, BackupError):
+                raise BackupError(f"restore failed; rollback generation: {rollback}: {exc}") from exc
+            raise
 
 
 def remote_join(root: str, child: str) -> str:
@@ -497,6 +770,9 @@ def main() -> int:
     verify_parser.add_argument("generation", type=Path)
     publish_parser = subparsers.add_parser("publish", help="Publish a local generation")
     publish_parser.add_argument("generation", type=Path)
+    restore_parser = subparsers.add_parser("restore", help="Restore one exact verified generation")
+    restore_parser.add_argument("generation")
+    restore_parser.add_argument("--yes", action="store_true")
     subparsers.add_parser("rotate", help="Retain the newest 12 remote generations")
     args = parser.parse_args()
 
@@ -506,6 +782,9 @@ def main() -> int:
             return 0
         if args.command == "verify":
             verify(args.generation)
+            return 0
+        if args.command == "restore":
+            restore(args.generation, confirmed=args.yes)
             return 0
         root = remote_root()
         if args.command == "run":

@@ -73,9 +73,12 @@ agent workflow rule; a boolean supplied by the same agent would not prove human
 approval and is not presented as a security boundary.
 
 `delete_all_memories` is not exposed because its blast radius is qualitatively
-different. The backup generation contains a Qdrant snapshot and history database,
-but the project does not yet ship an automated restore command. This is recovery
-material, not one-command rollback, and is one reason Dream remains unscheduled.
+different. A backup generation contains a Qdrant snapshot and history database.
+`mem0-backup restore` can replace both stores from one exact verified generation,
+but only after capturing a private rollback generation and stopping the API. A
+persistent marker prevents the API from starting if replacement fails between the
+two stores. This recovery path does not reduce bulk deletion to a single-record
+operation and does not authorize unattended Dream execution.
 
 ## Non-goals
 

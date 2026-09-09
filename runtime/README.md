@@ -219,7 +219,7 @@ Add `runtime/bin` to `PATH`, or copy its commands to a personal bin directory:
 ```text
 mem0-ctl       start, stop, status, health, logs, search
 mem0-admin     context, review, forget, bounded Dream cleanup
-mem0-backup    capture, verify, publish, rotate, status
+mem0-backup    capture, verify, publish, restore, rotate, status
 ```
 
 `mem0-ctl agents configure` connects installed Codex, Claude Code, OpenCode,
@@ -235,6 +235,19 @@ Remote backup is disabled until `MEM0_BACKUP_REMOTE` is configured. For the
 meaning and safety model of the `dream` subcommand, read
 [`docs/dream.md`](../docs/dream.md).
 
+Restore one exact generation only after reviewing its name:
+
+```bash
+mem0-backup restore 'mem0-2026-09-07T03:00:00+00:00' --yes
+```
+
+The command verifies the generation, captures a separate rollback generation,
+stops the API during both-store replacement, and verifies Qdrant plus SQLite
+before restarting. If mutation starts but restore fails, an in-progress marker
+keeps the API unavailable until the recorded rollback generation is restored.
+Read the complete operator procedure and version constraints in
+[`docs/restore.md`](../docs/restore.md).
+
 MCP exposes guarded single-item deletion. Its user-facing instructions require the
 agent to show the exact memory and ask for approval; the server itself enforces
 the reviewed hash/revision/scope and automatically captures a verified backup.
@@ -243,11 +256,9 @@ control. Bulk deletion is not exposed. The legacy-compatible REST delete route
 returns `403` unless `MEM0_ALLOW_UNGUARDED_DELETE=true`; `mem0-admin` remains the
 fuller review workflow.
 
-`mem0-backup` currently captures and verifies Qdrant plus history generations but
-does not provide an automated `restore` command. The generation is recovery
-material, not a claim of one-command recovery. Dream therefore remains
-human-approved and unscheduled until restore and a recovery drill are separately
-implemented and validated.
+`mem0-backup restore` is an operator-invoked recovery mechanism, not authorization
+for unattended cleanup. The project still ships no isolated recovery drill.
+Dream therefore remains human-approved and unscheduled.
 
 ## Tests (from a cloned repository)
 
