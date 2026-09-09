@@ -222,9 +222,10 @@ mem0-admin     context, review, forget, bounded Dream cleanup
 mem0-backup    capture, verify, publish, rotate, status
 ```
 
-`mem0-ctl agents configure` connects installed Codex, Claude Code, OpenCode, and
-AGY clients through their native MCP commands. Direct MCP calls remain
-model-selected, so
+`mem0-ctl agents configure` connects installed Codex, Claude Code, OpenCode,
+AGY, and Hermes clients through their native MCP commands. Hermes setup pauses
+for its native authentication and tool-selection prompts. Direct MCP calls
+remain model-selected, so
 `mem0-ctl codex-hooks install` is the recommended Codex baseline for dependable
 prompt retrieval and response capture. Read the
 [agent integration guide](../docs/agent-integration.md) before trusting the hooks
