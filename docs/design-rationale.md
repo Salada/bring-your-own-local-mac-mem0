@@ -33,6 +33,34 @@ compact structured facts and update decisions. In the author's Korean/English
 workload, Gemini normalized most facts into concise English while retaining proper
 nouns in their original form. This is called normalization here, not translation.
 
+## Retrieval layers and language boundary
+
+Fact extraction, dense embeddings, and spaCy serve different purposes. On write,
+Gemini first produces a compact memory fact. The selected Qwen3 or BGE-M3 profile
+then embeds that fact, while Mem0's separately installed `mem0ai[nlp]` path uses
+`en_core_web_sm` to extract entities and prepare lemmatized text. English
+normalization therefore makes the English spaCy pipeline useful for most stored
+facts; a multilingual dense embedder does not make it redundant.
+
+Search is asymmetric: Mem0 sends the original query directly to both the dense
+embedder and the English spaCy pipeline instead of normalizing it through Gemini
+first. A Korean query can still retrieve an English memory through the multilingual
+dense vector, but English lemmatization and entity matching may contribute less.
+Proper nouns deliberately retained in Korean have the same limitation. This is a
+constraint of Mem0's current hard-coded English pipeline, not of spaCy itself;
+spaCy publishes separate [Korean pipelines](https://spacy.io/models/ko/). See the
+upstream [language-boundary report](https://github.com/mem0ai/mem0/issues/4884)
+and pinned [Mem0 search implementation](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/memory/main.py).
+
+The baseline stops short of claiming full hybrid search. The pinned
+[Qdrant adapter](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/vector_stores/qdrant.py)
+needs `fastembed` to generate BM25 sparse vectors, and this project's minimal
+dependency set does not install it. spaCy entity extraction remains useful, but
+lemmatized metadata alone does not make BM25 active. Likewise, choosing BGE-M3
+through oMLX exposes only its dense vector; it does not enable BGE-M3's advertised
+sparse or multi-vector modes. These are independent optional retrieval features,
+not reasons to label either the embedder or spaCy as useless.
+
 As checked on 2026-09-09, Google's Gemini 3.5 Flash-Lite documentation lists
 structured output and function calling, and the Gemini Developer API pricing page
 lists standard input and output as free on the Free Tier. Google's limits are

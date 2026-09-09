@@ -29,9 +29,12 @@ over maximum agentic reasoning.
 
 In the author's deployed Korean/English workload, the Flash-class Gemini path
 normalized conversations into concise English memory facts while preserving
-proper nouns. The local multilingual embedder then handled Korean-to-English
-retrieval. This is a reported deployment observation, not a provider benchmark.
-This project describes the behavior as normalization rather than translation.
+proper nouns. The local multilingual embedder then handled the cross-lingual
+semantic part of Korean-to-English retrieval. Mem0's separate spaCy entity and
+lexical preprocessing remains in the pipeline and has a narrower English-language
+boundary described in the [design rationale](design-rationale.md#retrieval-layers-and-language-boundary).
+This is a reported deployment observation, not a provider benchmark. This project
+describes the behavior as normalization rather than translation.
 
 As of 2026-09-09, Google documents Gemini 3.5 Flash-Lite as a cost-efficient
 high-volume model for simple data processing, with structured output and function
