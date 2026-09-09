@@ -95,10 +95,23 @@ class CodexHookTest(unittest.TestCase):
     def test_hook_install_refuses_mixed_inline_configuration(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "hooks.json"
-            path.with_name("config.toml").write_text("[hooks]\n", encoding="utf-8")
+            path.with_name("config.toml").write_text(
+                "[[hooks.UserPromptSubmit]]\nhooks = []\n",
+                encoding="utf-8",
+            )
 
             with self.assertRaisesRegex(ValueError, "inline hooks already exist"):
                 configure_hooks(path, Path(root) / "codex_hook.py", install=True)
+
+    def test_hook_install_allows_codex_trust_state(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "hooks.json"
+            path.with_name("config.toml").write_text(
+                '[hooks.state."/tmp/hooks.json:Stop:0:0"]\ntrusted_hash = "sha256:test"\n',
+                encoding="utf-8",
+            )
+
+            self.assertTrue(configure_hooks(path, Path(root) / "codex_hook.py", install=True))
 
 
 if __name__ == "__main__":

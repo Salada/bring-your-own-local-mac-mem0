@@ -59,7 +59,8 @@ def configure_hooks(path: Path, script: Path, *, install: bool) -> bool:
     config_path = path.with_name("config.toml")
     if install and config_path.exists():
         with config_path.open("rb") as handle:
-            if "hooks" in tomllib.load(handle):
+            inline_hooks = tomllib.load(handle).get("hooks", {})
+            if isinstance(inline_hooks, dict) and any(key != "state" for key in inline_hooks):
                 raise ValueError(f"inline hooks already exist in {config_path}; integrate Mem0 there manually")
     if path.exists():
         data = json.loads(path.read_text(encoding="utf-8"))
