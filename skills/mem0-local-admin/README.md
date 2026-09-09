@@ -11,7 +11,7 @@ the runtime release; for the currently tested release:
 
 ```bash
 npx skills add \
-  https://github.com/Salada/bring-your-own-local-mac-mem0/tree/v0.1.4 \
+  https://github.com/Salada/bring-your-own-local-mac-mem0/tree/v0.2.0 \
   --skill mem0-local-admin --full-depth -g -y --copy
 ```
 
