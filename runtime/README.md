@@ -106,14 +106,25 @@ the lower-footprint alternative used in the original local environment.
 
 | Model | Dimensions | Context | Strengths | Tradeoffs |
 | --- | ---: | ---: | --- | --- |
-| [`Qwen3-Embedding-4B-4bit-DWQ`](https://huggingface.co/mlx-community/Qwen3-Embedding-4B-4bit-DWQ) | 2560 | 32K | Instruction-aware, 100+ natural and programming languages, strong multilingual and code retrieval | Larger model and vectors; generally slower and more memory-intensive |
-| [`bge-m3-mlx-fp16`](https://huggingface.co/mlx-community/bge-m3-mlx-fp16) | 1024 | 8K | Smaller vectors, multilingual, and designed for dense, sparse, and multi-vector retrieval | Shorter context; this stack currently uses only its dense-vector output |
+| [`Qwen3-Embedding-4B-4bit-DWQ`](https://huggingface.co/mlx-community/Qwen3-Embedding-4B-4bit-DWQ) | 2560 | 32K | Instruction-aware, 100+ natural and programming languages, strong multilingual and code retrieval | Larger model and vectors; local latency is not benchmarked here |
+| [`bge-m3-mlx-fp16`](https://huggingface.co/mlx-community/bge-m3-mlx-fp16) | 1024 | 8K | Smaller vectors; the upstream model supports multilingual dense, sparse, and multi-vector retrieval | Shorter context; this stack currently uses only its dense-vector output |
 
-Qwen3 is the better default when retrieval quality across code, Korean, and English
-matters more than footprint. BGE-M3 is attractive when local latency, memory use,
-and Qdrant storage are more important. BGE-M3's sparse and ColBERT-style modes do
-not become active merely by selecting it here; Mem0 currently consumes the
-OpenAI-compatible dense embedding response.
+The upstream Qwen3 model card reports higher aggregate multilingual MTEB scores
+for Qwen3-Embedding-4B than for BGE-M3. Those numbers do not benchmark these
+community MLX conversions, this Mem0 workload, or this Mac. Qwen3 is therefore an
+opinionated quality-first default, not a universal winner. BGE-M3 is the
+footprint-oriented option because it uses smaller vectors and a smaller model;
+measure local latency and retrieval quality before drawing stronger conclusions.
+
+Both choices fill the dense-embedding role; neither replaces Mem0's NLP path.
+This runtime installs `mem0ai[nlp]`, so the pinned Mem0 release uses spaCy's
+English model for entity extraction and keyword lemmatization. With Qdrant, actual
+BM25 scoring additionally requires `fastembed`, which this minimal dependency set
+does not install. The default path therefore retains entity extraction and
+cross-lingual dense retrieval but does not claim full BM25 hybrid search. Selecting
+BGE-M3 also does not activate its sparse or ColBERT-style modes because oMLX
+returns only the OpenAI-compatible dense embedding. See the
+[retrieval-layer rationale](../docs/design-rationale.md#retrieval-layers-and-language-boundary).
 
 Qwen3 profile:
 
