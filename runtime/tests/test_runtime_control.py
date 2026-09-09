@@ -107,10 +107,12 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
 """,
         )
 
-        subprocess.run(
+        result = subprocess.run(
             [str(CTL), "agents", "configure"],
             check=True,
             env=self._env(MEM0_MCP_URL="http://127.0.0.1:9999/mcp"),
+            text=True,
+            capture_output=True,
         )
 
         self.assertEqual(
@@ -123,6 +125,8 @@ printf 'agy %s\\n' "$*" >> "$FAKE_LOG"
                 "agy mcp add --type http mem0 http://127.0.0.1:9999/mcp",
             ],
         )
+        self.assertIn("their use remains model-selected", result.stdout)
+        self.assertIn("codex-hooks install", result.stdout)
 
 
 if __name__ == "__main__":

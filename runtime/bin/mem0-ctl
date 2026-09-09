@@ -34,7 +34,7 @@ Commands:
                  Configure, inspect, or remove MCP connections for Codex,
                  OpenCode, and AGY. Actions: configure, status, remove
   codex-hooks <action>
-                 Install, inspect, or remove optional Codex recall/capture hooks
+                 Install, inspect, or remove Codex recall/capture hooks
   ui             Display OpenMemory UI URL and relationship information
   help           Show this help message
 
@@ -151,6 +151,7 @@ case "$cmd" in
         fi
         mcp_url="${MEM0_MCP_URL:-http://127.0.0.1:11888/mcp}"
         found=0
+        configured_codex=0
         for agent in "$@"; do
             case "$agent" in
                 codex|opencode|agy) ;;
@@ -170,6 +171,7 @@ case "$cmd" in
                         codex mcp remove mem0 >/dev/null
                     fi
                     codex mcp add mem0 --url "$mcp_url"
+                    configured_codex=1
                     ;;
                 configure:opencode)
                     opencode mcp add mem0 --url "$mcp_url"
@@ -205,6 +207,11 @@ case "$cmd" in
         if [ "$found" -eq 0 ]; then
             echo "Error: none of the requested agent commands are installed." >&2
             exit 1
+        fi
+        if [ "$action" = "configure" ] && [ "$configured_codex" -eq 1 ]; then
+            echo "Codex MCP tools are configured, but their use remains model-selected."
+            echo "For reliable recall and capture, run: $0 codex-hooks install"
+            echo "Then restart Codex and review the commands with /hooks."
         fi
         ;;
 

@@ -223,10 +223,11 @@ mem0-backup    capture, verify, publish, rotate, status
 ```
 
 `mem0-ctl agents configure` connects installed Codex, OpenCode, and AGY clients
-through their native MCP commands. `mem0-ctl codex-hooks install` optionally
-enables deterministic Codex prompt retrieval and response capture. Read the
-[agent integration guide](../docs/agent-integration.md) before enabling hooks or
-copying the optional administration skill.
+through their native MCP commands. Direct MCP calls remain model-selected, so
+`mem0-ctl codex-hooks install` is the recommended Codex baseline for dependable
+prompt retrieval and response capture. Read the
+[agent integration guide](../docs/agent-integration.md) before trusting the hooks
+or copying the optional administration skill.
 
 Remote backup is disabled until `MEM0_BACKUP_REMOTE` is configured. For the
 meaning and safety model of the `dream` subcommand, read

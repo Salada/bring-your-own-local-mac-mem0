@@ -1,8 +1,9 @@
 # Connect coding agents
 
-The supported default is Direct MCP. It gives Codex, OpenCode, and AGY the same
-loopback-only Mem0 tools without installing a Mem0 Cloud plugin. The
-`mem0-local-admin` skill and Codex lifecycle hooks are separate opt-ins.
+Direct MCP is the supported transport. It gives Codex, OpenCode, and AGY the
+same loopback-only Mem0 tools without installing a Mem0 Cloud plugin. For Codex,
+the recommended reliable-recall baseline also includes the bounded lifecycle
+hooks below. The `mem0-local-admin` skill remains a separate opt-in.
 
 ## Configure installed agents
 
@@ -11,11 +12,14 @@ Install and start the [runtime](../runtime/README.md), then run:
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl health
 $HOME/.config/mem0/bin/mem0-ctl agents configure
+$HOME/.config/mem0/bin/mem0-ctl codex-hooks install
 ```
 
 The second command detects installed copies of `codex`, `opencode`, and `agy`,
 then adds or updates a server named `mem0` at
-`http://127.0.0.1:11888/mcp`. Select clients explicitly when necessary:
+`http://127.0.0.1:11888/mcp`. The third command is recommended when Codex is
+installed; review and trust the hooks after restart as described below. Select
+clients explicitly when necessary:
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl agents configure codex agy
@@ -60,8 +64,11 @@ Then inspect the active session:
 
 Finally ask the agent to call `search_memories` for a real prior decision. Direct
 MCP makes tools available; it does not guarantee that a model will call one on
-every prompt. The server returns MCP `instructions` that tell compatible clients
-to search at task start, but model-selected calls remain probabilistic.
+every prompt. In this project's original Codex testing, MCP-only configuration
+recalled memories too rarely to be a dependable default. The server returns MCP
+`instructions` that tell compatible clients to search at task start, but those
+calls remain model-selected and probabilistic. The lifecycle hooks close that
+gap for Codex.
 
 When a regression test needs exact identity, store a unique value in
 `metadata.marker` and retrieve it with a metadata filter. A marker-only
@@ -76,12 +83,13 @@ official clients expose explicit restart controls; an API event named
 `mcp_list_tools.completed` confirms that tool discovery is a distinct operation,
 but it does not by itself guarantee live refresh behavior in every Codex client.
 
-## Optional: deterministic Codex recall and capture
+## Recommended for Codex: deterministic recall and capture
 
 Direct MCP calls are model-selected. The repository's Codex hooks instead perform
 a bounded semantic lookup on `UserPromptSubmit` and capture substantive final
-responses on `Stop`. They are optional because they add a request to ordinary
-turns and currently target Codex only.
+responses on `Stop`. This is the recommended Codex baseline because it does not
+depend on the model deciding to call the search tool. Omit it only when you want
+MCP capability without automatic retrieval and capture.
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl codex-hooks install
@@ -135,7 +143,7 @@ cd "$HOME/.config/mem0"
 uv sync
 ./bin/mem0-ctl restart
 ./bin/mem0-ctl agents configure
-./bin/mem0-ctl codex-hooks install  # only if previously enabled
+./bin/mem0-ctl codex-hooks install  # recommended for Codex
 ```
 
 Reinstall the optional skill from the matching new tag, then start new agent
