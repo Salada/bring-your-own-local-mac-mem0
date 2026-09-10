@@ -1,0 +1,31 @@
+{
+  "name": "mem0-local",
+  "version": "0.1.0",
+  "description": "Local-first Mem0 recall and lifecycle capture for Codex.",
+  "author": {
+    "name": "Salada"
+  },
+  "homepage": "https://github.com/Salada/bring-your-own-local-mac-mem0",
+  "repository": "https://github.com/Salada/bring-your-own-local-mac-mem0",
+  "license": "Apache-2.0",
+  "keywords": [
+    "memory",
+    "mem0",
+    "local-first"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Local Mem0",
+    "shortDescription": "Recall and capture durable context on localhost.",
+    "longDescription": "Connect Codex to the repository's loopback-only Mem0 runtime with lifecycle batching, explicit controls, and guarded forgetting.",
+    "developerName": "Salada",
+    "category": "developer-tools",
+    "capabilities": [
+      "local memory recall",
+      "lifecycle capture",
+      "memory controls"
+    ],
+    "defaultPrompt": "Search local Mem0 for durable context relevant to this task."
+  }
+}
