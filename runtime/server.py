@@ -28,12 +28,20 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
-from categories import MemoryCategorizer, category_catalog, pop_project_categories  # noqa: E402
+from categories import (  # noqa: E402
+    MemoryCategorizer,
+    category_catalog,
+    pop_project_categories,
+)
 from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
 from memory_guards import validate_current, validate_exact_keeper  # noqa: E402
-from memory_listing import count_memories, list_memory_page, to_openmemory_item  # noqa: E402
+from memory_listing import (  # noqa: E402
+    count_memories,
+    list_memory_page,
+    to_openmemory_item,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -469,9 +477,7 @@ def backfill_categories(req: CategoryBackfillRequest):
             cursor=req.cursor,
         )
         candidates = [
-            item
-            for item in page["results"]
-            if req.overwrite or not (item.get("metadata") or {}).get("categories")
+            item for item in page["results"] if req.overwrite or not (item.get("metadata") or {}).get("categories")
         ]
         assignments = categorizer.classify(candidates, req.custom_categories)
         applied = 0
@@ -483,9 +489,7 @@ def backfill_categories(req: CategoryBackfillRequest):
             "eligible": len(candidates),
             "categorized": len(assignments),
             "applied": applied,
-            "items": [
-                {"id": assignment.memory_id, "categories": assignment.categories} for assignment in assignments
-            ],
+            "items": [{"id": assignment.memory_id, "categories": assignment.categories} for assignment in assignments],
             "next_cursor": page["next_cursor"],
             "has_more": page["has_more"],
         }

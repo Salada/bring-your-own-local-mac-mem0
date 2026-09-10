@@ -270,8 +270,8 @@ def create_mcp_server(memory: Memory, categorizer: Optional[MemoryCategorizer] =
                     metadata=meta or None,
                     infer=infer,
                 )
-            assignments = [] if meta.get("categories") else categorizer.safely_classify_add_result(
-                res, custom_categories
+            assignments = (
+                [] if meta.get("categories") else categorizer.safely_classify_add_result(res, custom_categories)
             )
             if assignments:
                 with mutation_lock():

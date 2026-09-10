@@ -149,9 +149,7 @@ class MemoryCategorizer:
         candidates = [
             row
             for row in rows
-            if isinstance(row, dict)
-            and str(row.get("event", "ADD")).upper() in {"ADD", "UPDATE"}
-            and row.get("id")
+            if isinstance(row, dict) and str(row.get("event", "ADD")).upper() in {"ADD", "UPDATE"} and row.get("id")
         ]
         return self.classify(candidates, custom_categories)
 

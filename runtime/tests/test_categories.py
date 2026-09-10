@@ -86,10 +86,7 @@ class CategoryInferenceTest(unittest.TestCase):
 
     def test_unknown_category_and_hallucinated_id_are_ignored(self):
         memory = make_memory(
-            '{"memories":['
-            '{"id":"m1","categories":["not_allowed"]},'
-            '{"id":"made-up","categories":["work"]}'
-            "]}"
+            '{"memories":[{"id":"m1","categories":["not_allowed"]},{"id":"made-up","categories":["work"]}]}'
         )
         categorizer = MemoryCategorizer(memory, [{"work": "Work facts"}])
 
