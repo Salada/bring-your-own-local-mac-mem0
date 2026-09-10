@@ -2,9 +2,10 @@
 
 Explicit-only Codex skill for the local `mem0-admin` CLI.
 
-It covers deep context retrieval, full memory review, confirmation-based forgetting,
-and bounded exact/temporary cleanup. Mutating operations require the deterministic
-CLI's scope and revision guards plus a verified pre-mutation backup.
+It covers deep context retrieval, full memory review, category backfill,
+confirmation-based forgetting, and bounded exact/temporary cleanup. Mutating
+operations require the deterministic CLI's guards plus a verified pre-mutation
+backup.
 
 Install the skill only after the local runtime and MCP connection work. Pin it to
 the runtime release; for the currently tested release:
