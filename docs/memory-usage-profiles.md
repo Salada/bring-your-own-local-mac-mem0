@@ -19,7 +19,8 @@ As checked on 2026-09-10, Mem0's current Codex plugin is version 0.3.1. It no
 longer follows the high-request pattern used by earlier plugin releases. It:
 
 - searches once, on the first prompt of at least 20 characters;
-- records prompts, responses, useful tool outcomes, and subagent results locally;
+- records prompts, responses, tool outcomes, and subagent results locally for
+  later extraction;
 - flushes accumulated evidence in the background after 5 exchanges, 10 messages,
   or 40,000 source characters, after 300 seconds idle, before compaction, and at
   session end; and
@@ -34,7 +35,7 @@ This local project currently uses a different, simpler policy:
 
 - `UserPromptSubmit` searches every prompt of at least 8 characters, requests 6
   candidates, keeps scores at or above 0.5, and injects at most 3 memories under
-  a 1,000-character hook budget; and
+  an approximate 1,000-token hook limit; and
 - `Stop` sends every non-sensitive assistant response of at least 120 characters
   through Mem0 extraction.
 
@@ -70,7 +71,7 @@ behavior.
 | Level | Automatic recall | Automatic capture |
 | --- | --- | --- |
 | `conservative` | Search only the first substantive prompt in a session; inject at most 2 strong matches | No automatic writes; explicit `add_memory` remains available |
-| `balanced` | Preserve the current per-prompt lookup, 0.5 score gate, 3-result cap, and 1,000-character budget | Preserve the current `Stop` capture with the 120-character and secret guards |
+| `balanced` | Preserve the current per-prompt lookup, 6-candidate search, 0.5 score gate, 3-result cap, and approximate 1,000-token hook limit | Preserve the current `Stop` capture with the 120-character and secret guards |
 | `aggressive` | Add one session bootstrap, search every substantive prompt, allow up to 5 matches, and permit at most one cue-driven follow-up for resume/error prompts | Capture eligible `Stop` results and add a pre-compaction fallback |
 
 Exact candidate counts and thresholds should remain profile constants initially,
@@ -120,7 +121,10 @@ memory text, prompts, or secrets.
    resolved levels. Conservative capture should not install a write hook.
 3. Add session-local counters and deduplication only for bootstrap, first-prompt,
    cue follow-up, and pre-compaction behavior; do not adopt the upstream event
-   store until a real batching requirement justifies it.
+   store until a real batching requirement justifies it. Store only counters and
+   content digests under `$HOME/.local/state/mem0/codex-hooks/`, key them by a
+   hashed session ID, remove them at session end, and expire stale entries. Never
+   persist prompts or memory text in this control state.
 4. Extend `codex-hooks status` to print the resolved, redacted call budget.
 5. Test invalid configuration, every profile mapping, per-session/per-turn caps,
    compaction deduplication, secret rejection, and preservation of unrelated
