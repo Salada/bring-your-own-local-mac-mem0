@@ -28,6 +28,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
+from categories import MemoryCategorizer, category_catalog, pop_project_categories  # noqa: E402
 from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
@@ -93,14 +94,15 @@ def resolve_config_path() -> pathlib.Path:
 CONFIG_FILE = resolve_config_path()
 
 
-def load_memory() -> Memory:
+def load_memory() -> tuple[Memory, list[dict[str, str]]]:
     """Initialize Mem0 instance from JSON configuration."""
     logger.info("Loading Mem0 configuration from: %s", CONFIG_FILE)
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         config = json.load(f)
+    project_categories = pop_project_categories(config)
     logger.info("Initializing Mem0 Memory instance (Qdrant + oMLX + SQLite)...")
     register_gemini_http_compat()
-    return Memory.from_config(config)
+    return Memory.from_config(config), project_categories
 
 
 incomplete_restore = restore_marker()
@@ -109,8 +111,9 @@ if incomplete_restore.exists():
         f"incomplete restore marker exists: {incomplete_restore}; complete the rollback restore before starting Mem0"
     )
 
-memory = load_memory()
-mcp = create_mcp_server(memory)
+memory, project_categories = load_memory()
+categorizer = MemoryCategorizer(memory, project_categories)
+mcp = create_mcp_server(memory, categorizer)
 
 
 @asynccontextmanager
@@ -151,6 +154,16 @@ class AddMemoryRequest(BaseModel):
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     infer: bool = True
+    custom_categories: Optional[list[dict[str, str]]] = None
+
+
+class CategoryBackfillRequest(BaseModel):
+    user_id: Optional[str] = DEFAULT_USER_ID
+    page_size: int = Field(default=25, ge=1, le=50)
+    cursor: Optional[str] = None
+    apply: bool = False
+    overwrite: bool = False
+    custom_categories: Optional[list[dict[str, str]]] = None
 
 
 class SearchMemoryRequest(BaseModel):
@@ -227,6 +240,12 @@ def add_memory(req: AddMemoryRequest):
                 metadata=req.metadata,
                 infer=req.infer,
             )
+        explicit_categories = (req.metadata or {}).get("categories")
+        assignments = [] if explicit_categories else categorizer.safely_classify_add_result(res, req.custom_categories)
+        if assignments:
+            with mutation_lock():
+                categorizer.apply(assignments)
+            categorizer.annotate_result(res, assignments)
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
@@ -434,8 +453,44 @@ def openmemory_filter_memories(req: OpenMemoryFilterRequest):
 
 @app.get("/api/v1/memories/categories")
 def openmemory_categories(user_id: Optional[str] = None):
-    """Return an empty category catalog when Mem0 metadata has no category DB."""
-    return {"categories": [], "total": 0}
+    """Return the configured category catalog in OpenMemory's filter shape."""
+    categories = category_catalog(project_categories)
+    return {"categories": categories, "total": len(categories)}
+
+
+@app.post("/v1/admin/categories/backfill")
+def backfill_categories(req: CategoryBackfillRequest):
+    """Preview or apply one cursor page of category backfill."""
+    try:
+        page = list_memory_page(
+            memory,
+            filters={"user_id": req.user_id} if req.user_id else None,
+            page_size=req.page_size,
+            cursor=req.cursor,
+        )
+        candidates = [
+            item
+            for item in page["results"]
+            if req.overwrite or not (item.get("metadata") or {}).get("categories")
+        ]
+        assignments = categorizer.classify(candidates, req.custom_categories)
+        applied = 0
+        if req.apply and assignments:
+            with mutation_lock():
+                applied = categorizer.apply(assignments)
+        return {
+            "scanned": len(page["results"]),
+            "eligible": len(candidates),
+            "categorized": len(assignments),
+            "applied": applied,
+            "items": [
+                {"id": assignment.memory_id, "categories": assignment.categories} for assignment in assignments
+            ],
+            "next_cursor": page["next_cursor"],
+            "has_more": page["has_more"],
+        }
+    except Exception as e:
+        raise_api_error("Backfilling memory categories", e)
 
 
 @app.get("/auth/setup-status")

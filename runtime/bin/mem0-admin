@@ -49,6 +49,7 @@ def http_json(
     *,
     params: Optional[dict[str, Any]] = None,
     data: Optional[dict[str, Any]] = None,
+    timeout: int = 30,
 ) -> dict[str, Any]:
     query = urllib.parse.urlencode({key: value for key, value in (params or {}).items() if value is not None})
     url = f"{BASE_URL}{path}" + (f"?{query}" if query else "")
@@ -57,7 +58,7 @@ def http_json(
     if body is not None:
         request.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
         return payload if isinstance(payload, dict) else {}
     except urllib.error.HTTPError as exc:
@@ -512,6 +513,77 @@ def positive_max_actions(value: str) -> int:
     return parsed
 
 
+def positive_backfill_limit(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= 10000:
+        raise argparse.ArgumentTypeError("must be between 1 and 10000")
+    return parsed
+
+
+def categorize_backfill(
+    *,
+    apply: bool,
+    overwrite: bool,
+    page_size: int,
+    max_items: int,
+    assume_yes: bool,
+) -> None:
+    """Preview or apply bounded category inference through the local server."""
+    backup = None
+    if apply:
+        if not assume_yes:
+            answer = input(
+                f"Classify up to {max_items} memories"
+                + (" including already categorized records" if overwrite else " missing categories only")
+                + "? [y/N] "
+            )
+            if answer.strip().lower() not in {"y", "yes"}:
+                raise AdminError("category backfill cancelled")
+        backup = capture_backup()
+
+    cursor = None
+    scanned = categorized = applied = 0
+    items: list[dict[str, Any]] = []
+    while scanned < max_items:
+        response = http_json(
+            "POST",
+            "/v1/admin/categories/backfill",
+            data={
+                "user_id": USER_ID,
+                "page_size": min(page_size, max_items - scanned),
+                "cursor": cursor,
+                "apply": apply,
+                "overwrite": overwrite,
+            },
+            timeout=120,
+        )
+        page_scanned = int(response.get("scanned", 0))
+        scanned += page_scanned
+        categorized += int(response.get("categorized", 0))
+        applied += int(response.get("applied", 0))
+        items.extend(response.get("items") or [])
+        cursor = response.get("next_cursor")
+        if not cursor or not page_scanned:
+            break
+
+    print(
+        json.dumps(
+            {
+                "mode": "apply" if apply else "dry-run",
+                "scanned": scanned,
+                "categorized": categorized,
+                "applied": applied,
+                "backup": backup,
+                "has_more": bool(cursor),
+                "next_cursor": cursor,
+                "items": items,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -539,6 +611,15 @@ def build_parser() -> argparse.ArgumentParser:
     dream_parser.add_argument("--app-id")
     dream_parser.add_argument("--max-actions", type=positive_max_actions, default=MAX_ACTIONS)
     dream_parser.add_argument("--yes", action="store_true")
+
+    categorize_parser = subparsers.add_parser("categorize", help="Preview or apply category backfill")
+    categorize_mode = categorize_parser.add_mutually_exclusive_group(required=True)
+    categorize_mode.add_argument("--dry-run", action="store_true")
+    categorize_mode.add_argument("--apply", action="store_true")
+    categorize_parser.add_argument("--overwrite", action="store_true")
+    categorize_parser.add_argument("--page-size", type=int, choices=range(1, 51), default=25)
+    categorize_parser.add_argument("--max-items", type=positive_backfill_limit, default=1000)
+    categorize_parser.add_argument("--yes", action="store_true")
     return parser
 
 
@@ -563,6 +644,14 @@ def main() -> int:
             if args.yes:
                 raise AdminError("--auto does not accept --yes; approve the displayed plan interactively")
             apply_plan(create_plan(args.app_id, args.max_actions), assume_yes=False)
+        elif args.command == "categorize":
+            categorize_backfill(
+                apply=args.apply,
+                overwrite=args.overwrite,
+                page_size=args.page_size,
+                max_items=args.max_items,
+                assume_yes=args.yes,
+            )
         return 0
     except AdminError as exc:
         print(f"mem0-admin: {exc}", file=sys.stderr)
