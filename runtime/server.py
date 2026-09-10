@@ -32,7 +32,7 @@ from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
 from memory_guards import validate_current, validate_exact_keeper  # noqa: E402
-from memory_listing import list_memory_page  # noqa: E402
+from memory_listing import count_memories, list_memory_page, to_openmemory_item  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -172,6 +172,25 @@ class UpdateMemoryRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class OpenMemoryFilterRequest(BaseModel):
+    user_id: Optional[str] = None
+    page: int = Field(default=1, ge=1)
+    size: int = Field(default=10, ge=1, le=500)
+    search_query: Optional[str] = None
+    app_ids: Optional[list[str]] = None
+    category_ids: Optional[list[str]] = None
+    sort_column: Optional[str] = None
+    sort_direction: Optional[str] = None
+    show_archived: bool = False
+
+
+def openmemory_user_id(user_id: Optional[str]) -> str:
+    """Resolve the placeholder embedded in the official prebuilt UI image."""
+    if not user_id or user_id == "NEXT_PUBLIC_USER_ID":
+        return DEFAULT_USER_ID
+    return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +405,39 @@ def delete_memory(memory_id: str):
 # ---------------------------------------------------------------------------
 # OpenMemory UI Compatibility & Auxiliary Routes
 # ---------------------------------------------------------------------------
+@app.post("/api/v1/memories/filter")
+def openmemory_filter_memories(req: OpenMemoryFilterRequest):
+    """Serve the read-only memory list contract used by OpenMemory UI."""
+    # Native Mem0 records have no OpenMemory archive state. The UI's sort/state
+    # fields are accepted for wire compatibility while Qdrant supplies the page.
+    filters: dict[str, Any] = {"user_id": openmemory_user_id(req.user_id)}
+    if req.app_ids:
+        filters["agent_id"] = {"in": req.app_ids}
+    if req.category_ids:
+        filters["categories"] = {"in": req.category_ids}
+    if req.search_query:
+        filters["data"] = {"icontains": req.search_query}
+    try:
+        result = list_memory_page(memory, filters=filters, page_size=req.size, page=req.page)
+        items = [to_openmemory_item(item) for item in result["results"]]
+        total = count_memories(memory, filters)
+        return {
+            "items": items,
+            "total": total,
+            "pages": (total + req.size - 1) // req.size,
+            "page": req.page,
+            "size": req.size,
+        }
+    except Exception as e:
+        raise_api_error("Filtering memories for OpenMemory", e)
+
+
+@app.get("/api/v1/memories/categories")
+def openmemory_categories(user_id: Optional[str] = None):
+    """Return an empty category catalog when Mem0 metadata has no category DB."""
+    return {"categories": [], "total": 0}
+
+
 @app.get("/auth/setup-status")
 def setup_status():
     """Tells dashboard that initial admin setup is already complete."""
@@ -435,18 +487,26 @@ def get_apps():
     return []
 
 
+@app.get("/api/v1/apps")
+@app.get("/api/v1/apps/")
+def openmemory_apps():
+    return {"apps": [], "total": 0, "page": 1, "pages": 0}
+
+
 @app.get("/v1/stats")
 @app.get("/stats")
+@app.get("/api/v1/stats")
+@app.get("/api/v1/stats/")
 def get_stats():
     """Return memory statistics for dashboard counters."""
     try:
         if hasattr(memory.vector_store, "client") and hasattr(memory.vector_store.client, "get_collection"):
             coll = memory.vector_store.client.get_collection(memory.collection_name)
-            return {"total_memories": coll.points_count}
+            return {"total_memories": coll.points_count, "total_apps": 0, "apps": []}
         points, _ = memory.vector_store.list(filters=None, top_k=10000)
-        return {"total_memories": len(points)}
+        return {"total_memories": len(points), "total_apps": 0, "apps": []}
     except Exception:
-        return {"total_memories": 0}
+        return {"total_memories": 0, "total_apps": 0, "apps": []}
 
 
 @app.get("/api-keys")

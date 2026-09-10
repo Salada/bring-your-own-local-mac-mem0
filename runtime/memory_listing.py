@@ -99,3 +99,33 @@ def list_memory_page(
         "next_cursor": str(next_offset) if next_offset is not None else None,
         "has_more": next_offset is not None,
     }
+
+
+def count_memories(memory: Any, filters: Optional[dict[str, Any]]) -> int:
+    """Count Qdrant points using the same filters as ``list_memory_page``."""
+    store = memory.vector_store
+    query_filter = store._create_filter(filters) if filters else None
+    result = store.client.count(
+        collection_name=store.collection_name,
+        count_filter=query_filter,
+        exact=True,
+    )
+    return int(result.count)
+
+
+def to_openmemory_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Translate a Mem0 result into the shape consumed by OpenMemory UI."""
+    metadata = dict(item.get("metadata") or {})
+    categories = metadata.get("categories") or []
+    if isinstance(categories, str):
+        categories = [categories]
+    return {
+        "id": item["id"],
+        "content": item.get("memory", ""),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+        "state": metadata.get("state", "active"),
+        "metadata_": metadata,
+        "categories": categories,
+        "app_name": item.get("agent_id") or metadata.get("app_id") or metadata.get("source") or "default",
+    }
