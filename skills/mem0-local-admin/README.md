@@ -2,10 +2,10 @@
 
 Explicit-only Codex skill for the local `mem0-admin` CLI.
 
-It covers deep context retrieval, full memory review, category backfill,
-confirmation-based forgetting, and bounded exact/temporary cleanup. Mutating
-operations require the deterministic CLI's guards plus a verified pre-mutation
-backup.
+It covers deep context retrieval, full memory review, category catalog preview
+and backfill, confirmation-based forgetting, and bounded exact/temporary cleanup.
+Mutating operations require the deterministic CLI's guards plus a verified
+pre-mutation backup.
 
 Install the skill only after the local runtime and MCP connection work. Pin it to
 the runtime release; for the currently tested release:
@@ -16,9 +16,10 @@ npx skills add \
   --skill mem0-local-admin --full-depth -g -y --copy
 ```
 
-The `v0.2.0` installation does not include category backfill. The category mode
-requires the next runtime-and-skill release containing PR #14; keep both pinned
-to that same release rather than installing the moving `main` branch.
+The `v0.2.0` installation does not include category commands. Category catalog
+preview and backfill require the next runtime-and-skill release containing PR
+#14 and later category work; keep both pinned to that same release rather than
+installing the moving `main` branch.
 
 Start a new Codex session, then invoke `$mem0-local-admin` explicitly. The skill
 does not enable automatic recall and is not part of the default agent setup. See

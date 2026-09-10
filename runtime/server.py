@@ -29,9 +29,11 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
 from categories import (  # noqa: E402
+    CategoryRecommendationError,
     CategoryWorker,
     MemoryCategorizer,
     category_catalog,
+    category_diff,
     pop_project_categories,
 )
 from gemini_http import register_gemini_http_compat  # noqa: E402
@@ -177,6 +179,11 @@ class CategoryBackfillRequest(BaseModel):
     apply: bool = False
     overwrite: bool = False
     custom_categories: Optional[list[dict[str, str]]] = None
+
+
+class CategoryRecommendationRequest(BaseModel):
+    use_case: str = Field(..., min_length=1, max_length=4000)
+    max_categories: int = Field(default=10, ge=1, le=50)
 
 
 class SearchMemoryRequest(BaseModel):
@@ -467,6 +474,36 @@ def openmemory_categories(user_id: Optional[str] = None):
     """Return the configured category catalog in OpenMemory's filter shape."""
     categories = category_catalog(project_categories)
     return {"categories": categories, "total": len(categories)}
+
+
+@app.get("/v1/admin/categories")
+def admin_categories():
+    """Return the active project catalog without changing it."""
+    return {"custom_categories": project_categories, "total": len(project_categories)}
+
+
+@app.post("/v1/admin/categories/recommend")
+def recommend_categories(req: CategoryRecommendationRequest):
+    """Preview a replacement catalog from operator-supplied context only."""
+    if not req.use_case.strip():
+        raise HTTPException(status_code=400, detail="use_case must not be blank")
+    try:
+        recommended = categorizer.recommend_catalog(req.use_case, req.max_categories)
+        return {
+            "mode": "preview",
+            "applied": False,
+            "llm_called": True,
+            "current_categories": project_categories,
+            "recommended_categories": recommended,
+            "diff": category_diff(project_categories, recommended),
+        }
+    except CategoryRecommendationError as e:
+        raise_api_error(
+            "Recommending memory categories",
+            HTTPException(status_code=502, detail=f"Invalid LLM category recommendation: {e}"),
+        )
+    except Exception as e:
+        raise_api_error("Recommending memory categories", e)
 
 
 @app.post("/v1/admin/categories/backfill")

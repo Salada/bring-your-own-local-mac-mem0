@@ -34,16 +34,16 @@ and filter categories but must not expose catalog mutation.
 
 ## Recommendation behavior
 
-A future admin recommendation command should be preview-only. It should:
+The admin recommendation command is preview-only. It:
 
-1. Build a candidate catalog from operator-provided domain or use-case text.
-2. Optionally use aggregate category statistics that do not contain memory text.
-3. Show the complete replacement diff and disclose that the configured LLM is
+1. Builds a candidate catalog from operator-provided domain or use-case text.
+2. Shows the complete replacement diff and discloses that the configured LLM is
    called and may incur cost.
-4. Require a distinct, explicit apply action to persist the catalog.
+3. Requires a distinct, explicit apply action to persist the catalog.
 
-Raw memory samples must not be used unless the operator explicitly opts in after
-the disclosure. Recommendations must never apply automatically.
+The command does not inspect memories or category aggregates. Raw memory samples
+must not be used unless a future mode adds an explicit opt-in after the disclosure.
+Recommendations must never apply automatically.
 
 Applying a catalog should validate the complete list, replace it atomically, and
 follow the deployment's configuration source of truth. On a Chezmoi-managed host,
@@ -57,10 +57,17 @@ catalog never starts backfill automatically. Existing records remain unchanged
 until an administrator previews and explicitly applies `mem0-admin categorize`.
 `--overwrite` remains a separate opt-in for records that already have categories.
 
+Use the read-only commands without changing the catalog:
+
+```bash
+mem0-admin categories show
+mem0-admin categories recommend "A bilingual software engineering assistant"
+```
+
 ## Staged delivery
 
 1. Keep this authorization and behavior contract as the implementation boundary.
-2. Add read-only admin catalog inspection and recommendation preview.
+2. Use the implemented read-only admin catalog inspection and recommendation preview.
 3. Add explicit, validated catalog apply after a persistent authorization boundary
    and configuration ownership model exist.
 4. Consider an OpenMemory admin UI only after the same authorization is enforced

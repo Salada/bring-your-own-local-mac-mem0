@@ -187,6 +187,18 @@ worker, keeping the existing add response contract and latency. A worker failure
 never rolls back the memory itself; uncategorized records remain eligible for
 the explicit admin backfill below.
 
+Inspect the active catalog or ask the configured LLM for a replacement preview.
+Recommendation sends only the supplied use-case text and does not persist its
+result:
+
+```bash
+mem0-admin categories show
+mem0-admin categories recommend "A bilingual software engineering assistant"
+```
+
+The plural `categories` command inspects the catalog. The existing singular
+`categorize` command previews or applies classification to historical records.
+
 After validating new writes, preview and optionally apply classification to
 existing uncategorized records:
 
@@ -247,7 +259,7 @@ Add `runtime/bin` to `PATH`, or copy its commands to a personal bin directory:
 
 ```text
 mem0-ctl       start, stop, status, health, logs, search
-mem0-admin     context, review, forget, bounded Dream cleanup
+mem0-admin     context, review, category preview/backfill, forget, bounded Dream cleanup
 mem0-backup    capture, verify, publish, restore, rotate, status
 ```
 
