@@ -397,13 +397,15 @@ class ContractTests(unittest.TestCase):
                     "method": "tools/call",
                     "params": {
                         "name": "search_memories",
-                        "arguments": {"query": "choice", "top_k": 50},
+                        "arguments": {
+                            "query": "choice",
+                            "top_k": 50,
+                            "project": "demo",
+                        },
                     },
                 }
             )
-        search.assert_called_once_with(
-            "choice", PLUGIN.parent.parent.name, limit=20, threshold=None
-        )
+        search.assert_called_once_with("choice", "demo", limit=20, threshold=None)
         payload = json.loads(called["result"]["content"][0]["text"])
         self.assertEqual(payload["results"][0]["memory"], "A durable choice")
 
