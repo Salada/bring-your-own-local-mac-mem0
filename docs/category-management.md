@@ -13,7 +13,7 @@ Categories have two configuration scopes and one stored result:
 This matches Mem0 Platform's documented precedence: request catalog, then project
 catalog, then the built-in defaults. Catalog changes affect later ingestion and do
 not retag existing memories. See Mem0's
-[custom-categories reference](https://github.com/mem0ai/mem0/blob/main/integrations/mem0-plugin/skills/mem0/references/features.md).
+[custom-categories reference](https://docs.mem0.ai/platform/features/custom-categories).
 
 ## Roles
 
@@ -23,9 +23,9 @@ not retag existing memories. See Mem0's
 | Writer | View the active catalog and override it for only that writer's add request |
 | Viewer | View and filter by categories |
 
-Project catalog mutation remains an administrator operation because the Platform
-[SDK updates it through an organization/project control-plane endpoint](https://github.com/mem0ai/mem0/blob/main/mem0-ts/src/client/mem0.ts).
-Per-request overrides remain a normal data-plane capability.
+Project catalog mutation remains an administrator operation because it changes the
+project-wide default for future writes through `project.update`. Per-request
+overrides remain a normal data-plane capability.
 
 The current loopback runtime does not enforce these roles: `/auth/me` always
 identifies the local caller as an administrator. Until real authorization exists,
