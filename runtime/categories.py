@@ -31,6 +31,10 @@ DEFAULT_CATEGORIES: tuple[dict[str, str], ...] = (
 )
 
 
+class CategoryRecommendationError(RuntimeError):
+    """The configured LLM returned an invalid category catalog."""
+
+
 def validate_categories(value: Optional[list[dict[str, str]]]) -> list[dict[str, str]]:
     """Validate the one-key mapping format used by the Mem0 Platform API."""
     source = list(DEFAULT_CATEGORIES) if value is None else value
@@ -128,12 +132,15 @@ class MemoryCategorizer:
             ],
             response_format={"type": "json_object"},
         )
-        raw_categories = self._parse_response(response).get("custom_categories")
-        if raw_categories is None:
-            raise ValueError("recommendation must include custom_categories")
-        recommended = validate_categories(raw_categories)
-        if len(recommended) > max_categories:
-            raise ValueError(f"recommendation exceeds max_categories={max_categories}")
+        try:
+            raw_categories = self._parse_response(response).get("custom_categories")
+            if raw_categories is None:
+                raise ValueError("recommendation must include custom_categories")
+            recommended = validate_categories(raw_categories)
+            if len(recommended) > max_categories:
+                raise ValueError(f"recommendation exceeds max_categories={max_categories}")
+        except ValueError as exc:
+            raise CategoryRecommendationError(str(exc)) from exc
         return recommended
 
     def classify(

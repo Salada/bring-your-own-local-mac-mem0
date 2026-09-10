@@ -7,6 +7,7 @@ from unittest import mock
 
 from categories import (
     DEFAULT_CATEGORIES,
+    CategoryRecommendationError,
     CategoryWorker,
     MemoryCategorizer,
     category_catalog,
@@ -98,11 +99,11 @@ class CategoryInferenceTest(unittest.TestCase):
     def test_catalog_recommendation_rejects_oversized_result(self):
         memory = make_memory('{"custom_categories":[{"work":"Work"},{"home":"Home"}]}')
 
-        with self.assertRaisesRegex(ValueError, "exceeds max_categories"):
+        with self.assertRaisesRegex(CategoryRecommendationError, "exceeds max_categories"):
             MemoryCategorizer(memory).recommend_catalog("Personal assistant", max_categories=1)
 
     def test_catalog_recommendation_requires_explicit_catalog_output(self):
-        with self.assertRaisesRegex(ValueError, "must include custom_categories"):
+        with self.assertRaisesRegex(CategoryRecommendationError, "must include custom_categories"):
             MemoryCategorizer(make_memory("{}")).recommend_catalog("Personal assistant")
 
     def test_per_call_categories_replace_project_catalog_and_apply_payload_only(self):

@@ -196,6 +196,9 @@ mem0-admin categories show
 mem0-admin categories recommend "A bilingual software engineering assistant"
 ```
 
+The plural `categories` command inspects the catalog. The existing singular
+`categorize` command previews or applies classification to historical records.
+
 After validating new writes, preview and optionally apply classification to
 existing uncategorized records:
 

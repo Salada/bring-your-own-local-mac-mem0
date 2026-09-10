@@ -29,6 +29,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
 from categories import (  # noqa: E402
+    CategoryRecommendationError,
     CategoryWorker,
     MemoryCategorizer,
     category_catalog,
@@ -484,6 +485,8 @@ def admin_categories():
 @app.post("/v1/admin/categories/recommend")
 def recommend_categories(req: CategoryRecommendationRequest):
     """Preview a replacement catalog from operator-supplied context only."""
+    if not req.use_case.strip():
+        raise HTTPException(status_code=400, detail="use_case must not be blank")
     try:
         recommended = categorizer.recommend_catalog(req.use_case, req.max_categories)
         return {
@@ -494,6 +497,11 @@ def recommend_categories(req: CategoryRecommendationRequest):
             "recommended_categories": recommended,
             "diff": category_diff(project_categories, recommended),
         }
+    except CategoryRecommendationError as e:
+        raise_api_error(
+            "Recommending memory categories",
+            HTTPException(status_code=502, detail=f"Invalid LLM category recommendation: {e}"),
+        )
     except Exception as e:
         raise_api_error("Recommending memory categories", e)
 
