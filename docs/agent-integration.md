@@ -11,10 +11,11 @@ Agent-specific newcomer guides:
 - [Hermes Agent](agents/hermes.md) — locally tested discovery and connectivity,
   interactive setup, removal, and native-memory distinction
 
-Direct MCP is the supported transport. It gives Codex, Claude Code, OpenCode,
+Direct MCP is the common transport. It gives Codex, Claude Code, OpenCode,
 AGY, and Hermes the same loopback-only Mem0 tools without installing a Mem0 Cloud
-plugin. For Codex, the recommended reliable-recall baseline also includes the
-bounded lifecycle hooks below. The `mem0-local-admin` skill remains a separate
+plugin. For Codex, the recommended path is the repository's full local plugin;
+the direct MCP plus legacy two-hook path remains compatible with clients that do
+not support plugin installation. The `mem0-local-admin` skill remains a separate
 opt-in.
 
 ## Configure installed agents
@@ -24,14 +25,11 @@ Install and start the [runtime](../runtime/README.md), then run:
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl health
 $HOME/.config/mem0/bin/mem0-ctl agents configure
-$HOME/.config/mem0/bin/mem0-ctl codex-hooks install
 ```
 
 The second command detects installed copies of `codex`, `claude`, `opencode`,
 `agy`, and `hermes`, then adds or updates a server named `mem0` at
-`http://127.0.0.1:11888/mcp`. The third command is recommended when Codex is
-installed; review and trust the hooks after restart as described below. Select
-clients explicitly when necessary. If Hermes is installed, its native setup is
+`http://127.0.0.1:11888/mcp`. Select clients explicitly when necessary. If Hermes is installed, its native setup is
 interactive and pauses the all-agent command for authentication and tool
 selection; answer as described in the [Hermes guide](agents/hermes.md).
 
@@ -112,13 +110,32 @@ official clients expose explicit restart controls; an API event named
 `mcp_list_tools.completed` confirms that tool discovery is a distinct operation,
 but it does not by itself guarantee live refresh behavior in every Codex client.
 
-## Recommended for Codex: deterministic recall and capture
+## Recommended for Codex: full lifecycle plugin
+
+The local plugin provides deterministic first-prompt recall, batched capture,
+compaction/session handoff, parent-to-subagent context, one focused search tool,
+and six memory skills. It supports independent conservative, balanced, and
+aggressive recall/capture levels. Remove the legacy hooks first if they were
+previously installed:
+
+```bash
+$HOME/.config/mem0/bin/mem0-ctl codex-hooks uninstall
+python3 plugins/mem0-local/core/memory_cli.py preflight
+codex plugin marketplace add /absolute/path/to/bring-your-own-local-mac-mem0
+codex plugin add mem0-local@byolm-mem0
+```
+
+Start a new Codex session, open `/hooks`, and trust the plugin hooks. See the
+[plugin guide](../plugins/mem0-local/README.md) and
+[memory profile guide](memory-usage-profiles.md).
+
+## Compatibility option: direct MCP plus two hooks
 
 Direct MCP calls are model-selected. The repository's Codex hooks instead perform
 a bounded semantic lookup on `UserPromptSubmit` and capture substantive final
-responses on `Stop`. This is the recommended Codex baseline because it does not
-depend on the model deciding to call the search tool. Omit it only when you want
-MCP capability without automatic retrieval and capture.
+responses on `Stop`. This compatibility path does not depend on the model
+deciding to call the search tool, but it lacks the full plugin's batching and
+wider lifecycle coverage. Do not install it together with the plugin.
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl codex-hooks install

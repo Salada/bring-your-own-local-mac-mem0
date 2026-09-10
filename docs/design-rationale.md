@@ -21,8 +21,8 @@ for the hosted plugin's current components and lifecycle behavior.
 That request pattern describes the plugin version originally evaluated for this
 project. Mem0 0.3.1 now searches only the first substantive prompt and batches
 locally recorded evidence before background extraction. The current comparison
-and a proposal for explicit conservative, balanced, and aggressive local policies
-are documented in [`memory-usage-profiles.md`](memory-usage-profiles.md).
+and the implemented conservative, balanced, and aggressive local policies are
+documented in [`memory-usage-profiles.md`](memory-usage-profiles.md).
 
 ## Opinionated component choices
 
@@ -32,7 +32,7 @@ are documented in [`memory-usage-profiles.md`](memory-usage-profiles.md).
 | Vector database | Qdrant container | Lowest observed RAM use among the vector stores evaluated on the author's Mac; this is a local observation, not a universal benchmark |
 | Embeddings | Qwen3 Embedding through oMLX | Removes a paid embedding API and runs directly on Apple Silicon; BGE-M3 remains a smaller documented alternative |
 | Fact extraction | Gemini 3.5 Flash-Lite | Free-tier availability, low latency, structured output, and enough capability for concise normalization |
-| Agent integration | Direct local MCP plus two narrow Codex hooks | Keeps bounded prompt recall and turn capture without the plugin's wider pre/post-tool lifecycle surface |
+| Agent integration | Direct local MCP for all clients; full local lifecycle plugin for Codex | Matches the current public Codex lifecycle while batching extraction and keeping explicit cost/privacy profiles |
 
 The LLM provider is not the interactive coding agent. Mem0 asks it to produce
 compact structured facts and update decisions. In the author's Korean/English

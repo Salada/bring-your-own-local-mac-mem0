@@ -11,8 +11,8 @@ hooks alongside several Hermes and AGY agents. Prompt retrieval, tool-related
 lookups, turn summaries, and compaction capture made Mem0 Cloud's free allowance
 impractical for that workload.
 
-The replacement keeps Qdrant and embeddings on one Apple Silicon Mac, limits the
-Codex lifecycle surface, and uses Gemini 3.5 Flash-Lite for the small structured
+The replacement keeps Qdrant and embeddings on one Apple Silicon Mac, batches
+the Codex lifecycle surface locally, and uses Gemini 3.5 Flash-Lite for the small structured
 fact-extraction job. The goal is to give ARM64 Mac users one inexpensive default
 they can run without designing a memory platform first. It is deliberately not a
 maximally flexible provider framework.
@@ -26,6 +26,7 @@ The repository is intentionally split into two paths:
 | --- | --- |
 | Install or operate the local stack | [`runtime/README.md`](runtime/README.md) |
 | Connect Codex, Claude Code, OpenCode, AGY, or Hermes | [`docs/agent-integration.md`](docs/agent-integration.md) |
+| Install the full local Codex lifecycle plugin | [`plugins/mem0-local/README.md`](plugins/mem0-local/README.md) |
 | Restore one exact backup generation | [`docs/restore.md`](docs/restore.md) |
 | Optionally install the Codex administration skill | [`skills/mem0-local-admin/README.md`](skills/mem0-local-admin/README.md) |
 
@@ -41,6 +42,8 @@ The repository is intentionally split into two paths:
 
 - `runtime/` owns executable behavior, APIs, storage guards, deployment examples,
   and tests.
+- `plugins/mem0-local/` owns the Codex lifecycle hooks, focused search tool, and
+  user-facing memory controls.
 - `skills/mem0-local-admin/` owns Codex guidance only. It does not implement or
   bypass mutation logic.
 - Machine-specific configuration, secrets, and personal backup destinations belong

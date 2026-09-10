@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mem0-local-search": {
+      "command": "python3",
+      "args": [
+        "${PLUGIN_ROOT}/core/mcp_server.py"
+      ]
+    }
+  }
+}

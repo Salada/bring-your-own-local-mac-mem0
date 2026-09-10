@@ -31,17 +31,21 @@ reranking, and limits injected context to 4,000 characters. The automatic
 first-prompt search asks for 5 results directly, so changing the general `top_k`
 option does not change that hook.
 
-This local project currently uses a different, simpler policy:
+This project now ships a repository-local plugin with the same public lifecycle
+shape: all eight documented hooks, one focused search tool, six skills, and a
+private evidence queue. The older `mem0-ctl codex-hooks` integration remains as
+a compatibility path for clients without plugin support:
 
-- `UserPromptSubmit` searches every prompt of at least 8 characters, requests 6
+- its `UserPromptSubmit` searches every prompt of at least 8 characters, requests 6
   candidates, keeps scores at or above 0.5, and injects at most 3 memories under
   an approximate 1,000-token hook limit; and
-- `Stop` sends every non-sensitive assistant response of at least 120 characters
+- its `Stop` sends every non-sensitive assistant response of at least 120 characters
   through Mem0 extraction.
 
-The local search path uses local embeddings and Qdrant, but each accepted capture
-can invoke the configured extraction LLM. Recall intensity and capture intensity
-therefore have different quality, latency, and cost effects.
+Do not install both paths together. The plugin batches lifecycle evidence before
+calling the configured extraction LLM, while recall continues to use local
+embeddings and Qdrant. Recall intensity and capture intensity therefore have
+different quality, latency, privacy, and cost effects.
 
 Sources inspected:
 
@@ -52,7 +56,7 @@ Sources inspected:
 - [Mem0 0.3.1 shared hook runner](https://github.com/mem0ai/mem0/blob/02f7a9b2c4fe38dedb96631e48c85c74ad58b605/integrations/agent-plugin-core/python/hook_runner.py)
 - [Mem0 0.3.1 shared memory core](https://github.com/mem0ai/mem0/blob/02f7a9b2c4fe38dedb96631e48c85c74ad58b605/integrations/agent-plugin-core/python/memory_core.py)
 
-## Recommendation: profiles, not one score
+## Implemented policy: profiles, not one score
 
 A single weight is misleading. Lowering a similarity threshold broadens recall,
 but it should not silently make the agent write more memories. Expose one named
@@ -65,41 +69,37 @@ MEM0_CODEX_CAPTURE_LEVEL=conservative|balanced|aggressive
 ```
 
 The profile sets both levels. Either level override, when present, changes only
-its own axis. Keep `balanced` as the default so an upgrade preserves today's
-behavior.
+its own axis. `balanced` is the default.
 
 | Level | Automatic recall | Automatic capture |
 | --- | --- | --- |
-| `conservative` | Search only the first substantive prompt in a session; inject at most 2 strong matches | No automatic writes; explicit `add_memory` remains available |
-| `balanced` | Preserve the current per-prompt lookup, 6-candidate search, 0.5 score gate, 3-result cap, and approximate 1,000-token hook limit | Preserve the current `Stop` capture with the 120-character and secret guards |
-| `aggressive` | Add one session bootstrap, search every substantive prompt, allow up to 5 matches, and permit at most one cue-driven follow-up for resume/error prompts | Capture eligible `Stop` results and add a pre-compaction fallback |
+| `conservative` | Search the first prompt of at least 20 characters; inject at most 2 results at score 0.65+ | Queue only explicit English or Korean remember requests and flush after the completed response |
+| `balanced` | Search the first prompt of at least 20 characters; inject at most 5 results at score 0.5+ | Queue lifecycle evidence; flush at 10 events, 40,000 characters, pre-compaction, or session end |
+| `aggressive` | Search at session bootstrap and every prompt of at least 20 characters; inject at most 8 results at score 0.35+ | Queue lifecycle evidence and flush after every completed turn, pre-compaction, or session end |
 
-Exact candidate counts and thresholds should remain profile constants initially,
-not another public configuration matrix. The MCP `search_memories` tool already
-supports per-call `top_k`, `threshold`, and `rerank` for exceptional searches.
-After fixture-based evaluation, advanced overrides can be added only for values
-users demonstrably need to tune.
+Candidate counts and thresholds remain profile constants rather than another
+public configuration matrix. The MCP `search_memories` tool supports per-call
+`top_k` and `threshold`, caps explicit search at 20, and remains available in all
+profiles.
 
-`aggressive` should still be bounded. Do not issue memory API calls for every file
-read or every tool result. Those events amplify with agent activity and were the
-main source of surprising request volume in the older plugin design. Tool failures
-can contribute a short cue to the next prompt lookup without creating an
-additional per-tool search.
+`aggressive` remains bounded. Tool events are queued locally and never cause an
+individual extraction request. Secret-like events are rejected before they enter
+the queue, and the extraction worker deduplicates identical evidence within a
+session.
 
 ## Call budget
 
-The resolved policy should make its upper bound observable through
-`mem0-ctl codex-hooks status`:
+The `status` skill reports the resolved policy and redacted queue counters:
 
 | Profile | Automatic searches | Automatic extraction writes |
 | --- | --- | --- |
-| `conservative` | At most 1 per session | 0 |
-| `balanced` | At most 1 per eligible prompt | At most 1 per eligible completed turn |
-| `aggressive` | 1 bootstrap, 1 per eligible prompt, and at most 1 cue follow-up per turn | At most 1 per eligible completed turn, plus a deduplicated compaction fallback |
+| `conservative` | At most 1 per session | Only after an explicit remember request |
+| `balanced` | At most 1 per session | One per batch boundary; all remaining evidence at compaction/end |
+| `aggressive` | 1 bootstrap plus 1 per eligible prompt | At most 1 per completed turn; all remaining evidence at compaction/end |
 
-The status output should show the resolved profile, recall level, capture level,
-hook events, result cap, context budget, and capture minimum. It must never show
-memory text, prompts, or secrets.
+Status shows recall and capture levels, result/context bounds, pause state, active
+session count, and pending event count. It never shows memory text, prompts, or
+secrets.
 
 ## Invariants for every profile
 
@@ -113,26 +113,16 @@ memory text, prompts, or secrets.
 - Aggressiveness never broadens user, project, agent, or run scope.
 - Compaction fallback must deduplicate an already captured turn.
 
-## Staged implementation
+## Storage and lifecycle boundary
 
-1. Add strict profile parsing to `codex_hook.py`, with `balanced` reproducing the
-   current output byte-for-byte for the same hook input.
-2. Make hook installation select only the lifecycle events required by the
-   resolved levels. Conservative capture should not install a write hook.
-3. Add session-local counters and deduplication only for bootstrap, first-prompt,
-   cue follow-up, and pre-compaction behavior; do not adopt the upstream event
-   store until a real batching requirement justifies it. Store only counters and
-   content digests under `$HOME/.local/state/mem0/codex-hooks/`, key them by a
-   hashed session ID, remove them at session end, and expire stale entries. Never
-   persist prompts or memory text in this control state.
-4. Extend `codex-hooks status` to print the resolved, redacted call budget.
-5. Test invalid configuration, every profile mapping, per-session/per-turn caps,
-   compaction deduplication, secret rejection, and preservation of unrelated
-   hooks.
-6. Evaluate Korean and English positive/negative prompt fixtures for recall hit
-   rate, irrelevant injection rate, injected characters, hook latency, extraction
-   calls, and duplicate memories. Keep `balanced` as the release default unless
-   those measurements justify a migration.
+All eight hooks stay installed so pause/resume, compaction, and parent-to-subagent
+handoff remain predictable. Profiles select behavior inside those hooks. Bounded
+prompt, response, tool, and subagent evidence is stored under Codex's private
+`${PLUGIN_DATA}` directory until a successful extraction flush. Failed or crashed
+flushes leave recoverable pending evidence; `SessionStart` retries it.
 
-This iteration is a design only. It does not change installed hooks, stored
-memories, the extraction provider, or the current runtime default.
+`PreCompact` and `SessionEnd` start detached flushes because hook execution has a
+three-second budget and local extraction may take longer. This makes durable
+capture eventually consistent rather than a synchronous completion guarantee.
+See [ADR 0002](decisions/0002-codex-plugin-lifecycle.md) for the decision and SaaS
+parity boundary.
