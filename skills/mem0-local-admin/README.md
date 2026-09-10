@@ -16,6 +16,10 @@ npx skills add \
   --skill mem0-local-admin --full-depth -g -y --copy
 ```
 
+The `v0.2.0` installation does not include category backfill. The category mode
+requires the next runtime-and-skill release containing PR #14; keep both pinned
+to that same release rather than installing the moving `main` branch.
+
 Start a new Codex session, then invoke `$mem0-local-admin` explicitly. The skill
 does not enable automatic recall and is not part of the default agent setup. See
 the [agent integration guide](../../docs/agent-integration.md) for MCP and hook
