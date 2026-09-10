@@ -70,6 +70,8 @@ one-key objects mapping a category name to its description. Per-request
 `custom_categories` replace this project-level list. If both are omitted, the
 runtime uses the Platform's 15 built-in category names. Category inference uses
 the configured Mem0 LLM and stores the selected category in Qdrant metadata.
+See [`category-management.md`](category-management.md) for the project-admin,
+writer, recommendation, and backfill boundaries.
 New-memory category enrichment runs on a single background worker so it does
 not add another LLM round trip to the OSS add response. The stored memory is
 still available if enrichment fails or the process stops; admin backfill can
