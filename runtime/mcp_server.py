@@ -33,6 +33,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
+from categories import CategoryWorker, MemoryCategorizer  # noqa: E402
 from memory_guards import validate_current  # noqa: E402
 from memory_listing import list_memory_page  # noqa: E402
 
@@ -137,9 +138,15 @@ def normalize_filters(
     return normalized
 
 
-def create_mcp_server(memory: Memory) -> FastMCP:
+def create_mcp_server(
+    memory: Memory,
+    categorizer: Optional[MemoryCategorizer] = None,
+    category_worker: Optional[CategoryWorker] = None,
+) -> FastMCP:
     """Initialize FastMCP server with comprehensive Mem0 toolset."""
     mcp = FastMCP("mem0", instructions=MCP_INSTRUCTIONS)
+    categorizer = categorizer or MemoryCategorizer(memory)
+    category_worker = category_worker or CategoryWorker(categorizer, mutation_lock)
     mcp.settings.streamable_http_path = "/"
 
     @mcp.tool()
@@ -250,6 +257,7 @@ def create_mcp_server(memory: Memory) -> FastMCP:
         app_id: Optional[str] = None,
         metadata: Optional[dict] = None,
         infer: bool = True,
+        custom_categories: Optional[list[dict[str, str]]] = None,
     ) -> str:
         """Save text, conversation history, or facts into Mem0 memory.
 
@@ -259,6 +267,7 @@ def create_mcp_server(memory: Memory) -> FastMCP:
         if app_id and "app_id" not in meta:
             meta["app_id"] = app_id
         try:
+            resolved_categories = None if meta.get("categories") else categorizer.catalog(custom_categories)
             with mutation_lock():
                 res = memory.add(
                     text,
@@ -267,6 +276,8 @@ def create_mcp_server(memory: Memory) -> FastMCP:
                     metadata=meta or None,
                     infer=infer,
                 )
+            if not meta.get("categories"):
+                category_worker.submit(res, resolved_categories)
             return json.dumps(res, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in add_memory: %s", e)
@@ -280,9 +291,18 @@ def create_mcp_server(memory: Memory) -> FastMCP:
         app_id: Optional[str] = None,
         metadata: Optional[dict] = None,
         infer: bool = True,
+        custom_categories: Optional[list[dict[str, str]]] = None,
     ) -> str:
         """Save knowledge or facts into Mem0 (alias for add_memory)."""
-        return add_memory(text, user_id=user_id, agent_id=agent_id, app_id=app_id, metadata=metadata, infer=infer)
+        return add_memory(
+            text,
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            metadata=metadata,
+            infer=infer,
+            custom_categories=custom_categories,
+        )
 
     @mcp.tool()
     def update_memory(

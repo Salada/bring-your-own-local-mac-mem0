@@ -177,6 +177,24 @@ The direct `google-genai` dependency is required by this default provider.
 it does not remove the Uvicorn dependency.
 Never commit or upload the populated `.env` or rendered configuration.
 
+The optional top-level `custom_categories` list follows the hosted Mem0 shape:
+each item is a one-key object whose value describes the category. Calls to the
+REST or MCP add APIs may supply their own `custom_categories`; call-level values
+replace the project catalog for that write. Without either, the hosted default
+15-category catalog is used. OpenMemory reads the same catalog for its filters.
+Category enrichment runs after a successful OSS write on a single background
+worker, keeping the existing add response contract and latency. A worker failure
+never rolls back the memory itself; uncategorized records remain eligible for
+the explicit admin backfill below.
+
+After validating new writes, preview and optionally apply classification to
+existing uncategorized records:
+
+```bash
+mem0-admin categorize --dry-run --max-items 100
+mem0-admin categorize --apply --max-items 100
+```
+
 For Gemini, OpenAI, Ollama, and OpenAI-compatible examples—with explicit
 verification status—read [`docs/llm-providers.md`](../docs/llm-providers.md).
 General defaults and precedence are documented in

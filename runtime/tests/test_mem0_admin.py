@@ -162,6 +162,56 @@ class Mem0AdminTest(unittest.TestCase):
         self.assertEqual(params["expected_keeper_hash"], "hash-new")
         self.assertEqual(params["expected_keeper_revision"], "2026-09-02T00:00:00+00:00")
 
+    def test_category_backfill_dry_run_never_backs_up_or_applies(self):
+        response = {
+            "scanned": 1,
+            "categorized": 1,
+            "applied": 0,
+            "items": [{"id": "m1", "categories": ["technology"]}],
+            "next_cursor": None,
+        }
+        with (
+            mock.patch.object(mem0_admin, "http_json", return_value=response) as request,
+            mock.patch.object(mem0_admin, "capture_backup") as backup,
+            mock.patch("builtins.print"),
+        ):
+            mem0_admin.categorize_backfill(
+                apply=False,
+                overwrite=False,
+                page_size=25,
+                max_items=100,
+                assume_yes=False,
+            )
+
+        backup.assert_not_called()
+        self.assertFalse(request.call_args.kwargs["data"]["apply"])
+
+    def test_category_backfill_apply_backs_up_before_first_page(self):
+        events = []
+
+        def backup():
+            events.append("backup")
+            return "/backup/generation"
+
+        def request(*_args, **_kwargs):
+            events.append("request")
+            return {"scanned": 0, "categorized": 0, "applied": 0, "next_cursor": None}
+
+        with (
+            mock.patch.object(mem0_admin, "capture_backup", side_effect=backup),
+            mock.patch.object(mem0_admin, "http_json", side_effect=request),
+            mock.patch("builtins.print"),
+        ):
+            mem0_admin.categorize_backfill(
+                apply=True,
+                overwrite=False,
+                page_size=25,
+                max_items=100,
+                assume_yes=True,
+            )
+
+        self.assertEqual(events, ["backup", "request"])
+
 
 if __name__ == "__main__":
     unittest.main()

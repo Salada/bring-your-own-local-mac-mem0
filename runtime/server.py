@@ -28,11 +28,21 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
+from categories import (  # noqa: E402
+    CategoryWorker,
+    MemoryCategorizer,
+    category_catalog,
+    pop_project_categories,
+)
 from gemini_http import register_gemini_http_compat  # noqa: E402
 from http_errors import to_http_exception  # noqa: E402
 from mcp_server import create_mcp_server, normalize_filters  # noqa: E402
 from memory_guards import validate_current, validate_exact_keeper  # noqa: E402
-from memory_listing import list_memory_page  # noqa: E402
+from memory_listing import (  # noqa: E402
+    count_memories,
+    list_memory_page,
+    to_openmemory_item,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,14 +103,15 @@ def resolve_config_path() -> pathlib.Path:
 CONFIG_FILE = resolve_config_path()
 
 
-def load_memory() -> Memory:
+def load_memory() -> tuple[Memory, list[dict[str, str]]]:
     """Initialize Mem0 instance from JSON configuration."""
     logger.info("Loading Mem0 configuration from: %s", CONFIG_FILE)
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         config = json.load(f)
+    project_categories = pop_project_categories(config)
     logger.info("Initializing Mem0 Memory instance (Qdrant + oMLX + SQLite)...")
     register_gemini_http_compat()
-    return Memory.from_config(config)
+    return Memory.from_config(config), project_categories
 
 
 incomplete_restore = restore_marker()
@@ -109,16 +120,21 @@ if incomplete_restore.exists():
         f"incomplete restore marker exists: {incomplete_restore}; complete the rollback restore before starting Mem0"
     )
 
-memory = load_memory()
-mcp = create_mcp_server(memory)
+memory, project_categories = load_memory()
+categorizer = MemoryCategorizer(memory, project_categories)
+category_worker = CategoryWorker(categorizer, mutation_lock)
+mcp = create_mcp_server(memory, categorizer, category_worker)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage lifecycle of background services including Streamable HTTP session manager."""
     logger.info("Starting FastMCP Streamable HTTP session manager...")
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        category_worker.shutdown()
     logger.info("Stopped FastMCP Streamable HTTP session manager.")
 
 
@@ -151,6 +167,16 @@ class AddMemoryRequest(BaseModel):
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     infer: bool = True
+    custom_categories: Optional[list[dict[str, str]]] = None
+
+
+class CategoryBackfillRequest(BaseModel):
+    user_id: Optional[str] = DEFAULT_USER_ID
+    page_size: int = Field(default=25, ge=1, le=50)
+    cursor: Optional[str] = None
+    apply: bool = False
+    overwrite: bool = False
+    custom_categories: Optional[list[dict[str, str]]] = None
 
 
 class SearchMemoryRequest(BaseModel):
@@ -172,6 +198,25 @@ class UpdateMemoryRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class OpenMemoryFilterRequest(BaseModel):
+    user_id: Optional[str] = None
+    page: int = Field(default=1, ge=1)
+    size: int = Field(default=10, ge=1, le=500)
+    search_query: Optional[str] = None
+    app_ids: Optional[list[str]] = None
+    category_ids: Optional[list[str]] = None
+    sort_column: Optional[str] = None
+    sort_direction: Optional[str] = None
+    show_archived: bool = False
+
+
+def openmemory_user_id(user_id: Optional[str]) -> str:
+    """Resolve the placeholder embedded in the official prebuilt UI image."""
+    if not user_id or user_id == "NEXT_PUBLIC_USER_ID":
+        return DEFAULT_USER_ID
+    return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +244,8 @@ def health():
 def add_memory(req: AddMemoryRequest):
     """Add new memory item or extract facts from messages."""
     try:
+        explicit_categories = (req.metadata or {}).get("categories")
+        resolved_categories = None if explicit_categories else categorizer.catalog(req.custom_categories)
         with mutation_lock():
             res = memory.add(
                 messages=req.messages,
@@ -208,6 +255,8 @@ def add_memory(req: AddMemoryRequest):
                 metadata=req.metadata,
                 infer=req.infer,
             )
+        if not explicit_categories:
+            category_worker.submit(res, resolved_categories)
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
@@ -386,6 +435,71 @@ def delete_memory(memory_id: str):
 # ---------------------------------------------------------------------------
 # OpenMemory UI Compatibility & Auxiliary Routes
 # ---------------------------------------------------------------------------
+@app.post("/api/v1/memories/filter")
+def openmemory_filter_memories(req: OpenMemoryFilterRequest):
+    """Serve the read-only memory list contract used by OpenMemory UI."""
+    # Native Mem0 records have no OpenMemory archive state. The UI's sort/state
+    # fields are accepted for wire compatibility while Qdrant supplies the page.
+    filters: dict[str, Any] = {"user_id": openmemory_user_id(req.user_id)}
+    if req.app_ids:
+        filters["agent_id"] = {"in": req.app_ids}
+    if req.category_ids:
+        filters["categories"] = {"in": req.category_ids}
+    if req.search_query:
+        filters["data"] = {"icontains": req.search_query}
+    try:
+        result = list_memory_page(memory, filters=filters, page_size=req.size, page=req.page)
+        items = [to_openmemory_item(item) for item in result["results"]]
+        total = count_memories(memory, filters)
+        return {
+            "items": items,
+            "total": total,
+            "pages": (total + req.size - 1) // req.size,
+            "page": req.page,
+            "size": req.size,
+        }
+    except Exception as e:
+        raise_api_error("Filtering memories for OpenMemory", e)
+
+
+@app.get("/api/v1/memories/categories")
+def openmemory_categories(user_id: Optional[str] = None):
+    """Return the configured category catalog in OpenMemory's filter shape."""
+    categories = category_catalog(project_categories)
+    return {"categories": categories, "total": len(categories)}
+
+
+@app.post("/v1/admin/categories/backfill")
+def backfill_categories(req: CategoryBackfillRequest):
+    """Preview or apply one cursor page of category backfill."""
+    try:
+        page = list_memory_page(
+            memory,
+            filters={"user_id": req.user_id} if req.user_id else None,
+            page_size=req.page_size,
+            cursor=req.cursor,
+        )
+        candidates = [
+            item for item in page["results"] if req.overwrite or not (item.get("metadata") or {}).get("categories")
+        ]
+        assignments = categorizer.classify(candidates, req.custom_categories)
+        applied = 0
+        if req.apply and assignments:
+            with mutation_lock():
+                applied = categorizer.apply(assignments)
+        return {
+            "scanned": len(page["results"]),
+            "eligible": len(candidates),
+            "categorized": len(assignments),
+            "applied": applied,
+            "items": [{"id": assignment.memory_id, "categories": assignment.categories} for assignment in assignments],
+            "next_cursor": page["next_cursor"],
+            "has_more": page["has_more"],
+        }
+    except Exception as e:
+        raise_api_error("Backfilling memory categories", e)
+
+
 @app.get("/auth/setup-status")
 def setup_status():
     """Tells dashboard that initial admin setup is already complete."""
@@ -435,18 +549,26 @@ def get_apps():
     return []
 
 
+@app.get("/api/v1/apps")
+@app.get("/api/v1/apps/")
+def openmemory_apps():
+    return {"apps": [], "total": 0, "page": 1, "pages": 0}
+
+
 @app.get("/v1/stats")
 @app.get("/stats")
+@app.get("/api/v1/stats")
+@app.get("/api/v1/stats/")
 def get_stats():
     """Return memory statistics for dashboard counters."""
     try:
         if hasattr(memory.vector_store, "client") and hasattr(memory.vector_store.client, "get_collection"):
             coll = memory.vector_store.client.get_collection(memory.collection_name)
-            return {"total_memories": coll.points_count}
+            return {"total_memories": coll.points_count, "total_apps": 0, "apps": []}
         points, _ = memory.vector_store.list(filters=None, top_k=10000)
-        return {"total_memories": len(points)}
+        return {"total_memories": len(points), "total_apps": 0, "apps": []}
     except Exception:
-        return {"total_memories": 0}
+        return {"total_memories": 0, "total_apps": 0, "apps": []}
 
 
 @app.get("/api-keys")

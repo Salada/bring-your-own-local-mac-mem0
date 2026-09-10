@@ -25,5 +25,10 @@
     }
   },
   "history_db_path": "__SET_TO_ABSOLUTE_HOME__/.local/share/mem0/history.db",
+  "custom_categories": [
+    {"technology": "Software, hardware, programming, tools, and technical decisions."},
+    {"user_preferences": "General likes, dislikes, choices, and preferred ways of working."},
+    {"misc": "Memories that do not fit another available category."}
+  ],
   "version": "v1.1"
 }

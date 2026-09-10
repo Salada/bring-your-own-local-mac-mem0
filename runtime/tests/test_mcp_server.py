@@ -11,7 +11,7 @@ from mcp_server import (
     normalize_filters,
 )
 from memory_guards import validate_exact_keeper
-from memory_listing import list_memory_page
+from memory_listing import count_memories, list_memory_page, to_openmemory_item
 
 
 class NormalizeFiltersTest(unittest.TestCase):
@@ -272,6 +272,39 @@ class MemoryPaginationTest(unittest.TestCase):
         result = list_memory_page(memory, filters=None, page_size=1)
 
         self.assertEqual(result["results"][0]["metadata"], {"type": "decision"})
+
+    def test_openmemory_contract_maps_content_and_defaults(self):
+        item = {
+            "id": "1",
+            "memory": "one",
+            "created_at": "2026-09-10T00:00:00Z",
+            "agent_id": "codex",
+            "metadata": {"categories": ["work"]},
+        }
+
+        result = to_openmemory_item(item)
+
+        self.assertEqual(result["content"], "one")
+        self.assertEqual(result["state"], "active")
+        self.assertEqual(result["categories"], ["work"])
+        self.assertEqual(result["app_name"], "codex")
+        self.assertEqual(result["metadata_"], {"categories": ["work"]})
+
+    def test_count_uses_same_qdrant_filter(self):
+        memory, client = self.make_memory()
+        client.count_calls = []
+
+        def count(**kwargs):
+            client.count_calls.append(kwargs)
+            return SimpleNamespace(count=23)
+
+        client.count = count
+
+        result = count_memories(memory, {"user_id": "u"})
+
+        self.assertEqual(result, 23)
+        self.assertEqual(client.count_calls[0]["count_filter"], ("filter", {"user_id": "u"}))
+        self.assertTrue(client.count_calls[0]["exact"])
 
 
 class MemoryGuardTest(unittest.TestCase):

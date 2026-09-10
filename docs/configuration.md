@@ -65,6 +65,28 @@ For Gemini on Vertex AI, this runtime additionally accepts `base_url` and a
 string-to-string `http_headers` mapping under `llm.config`. See the tested
 construction example in [`llm-providers.md`](llm-providers.md).
 
+`custom_categories` accepts the Mem0 Platform-compatible format: a list of
+one-key objects mapping a category name to its description. Per-request
+`custom_categories` replace this project-level list. If both are omitted, the
+runtime uses the Platform's 15 built-in category names. Category inference uses
+the configured Mem0 LLM and stores the selected category in Qdrant metadata.
+New-memory category enrichment runs on a single background worker so it does
+not add another LLM round trip to the OSS add response. The stored memory is
+still available if enrichment fails or the process stops; admin backfill can
+classify any record left without categories.
+
+Existing records are not silently recategorized when configuration changes.
+Preview a bounded backfill first, then explicitly apply it (the apply command
+captures a backup before the first metadata update):
+
+```bash
+mem0-admin categorize --dry-run --max-items 100
+mem0-admin categorize --apply --max-items 100
+```
+
+By default only records without categories are considered. Add `--overwrite`
+only when an intentional full recategorization is required.
+
 Changing an embedding model is not a live configuration toggle. A collection
 created at 2560 dimensions cannot accept 1024-dimensional BGE-M3 vectors. Use a
 new collection and re-embed memories when changing profiles.
