@@ -93,9 +93,9 @@ local MLX execution and avoiding network/API cost.
 ## Temporal reasoning boundary
 
 Mem0 Platform v3 includes a managed temporal ranking boost, but the OSS SDK does
-not. A local approximation is technically feasible through structured Qdrant
-payloads and adapter-side reranking; it is not a configuration toggle or exact
-Platform parity. See the tested constraints and staged proposal in
+not. This runtime implements an automatic, cue-gated local approximation through
+structured Qdrant payloads and adapter-side reranking; it is not a configuration
+toggle or exact Platform parity. See the behavior and tested constraints in
 [`temporal-reasoning.md`](temporal-reasoning.md).
 
 ## Deletion boundary

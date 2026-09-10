@@ -124,6 +124,73 @@ class CategoryInferenceTest(unittest.TestCase):
         self.assertIn('"work"', prompt)
         self.assertNotIn('"personal"', prompt)
 
+    def test_category_and_temporal_enrichment_share_one_llm_call(self):
+        memory = make_memory(
+            '{"memories":[{"id":"m1","categories":["work"],'
+            '"event_start":"2026-09-10T14:00:00+09:00",'
+            '"event_end":"2026-09-10T15:00:00+09:00","temporal_kind":"occurrence"}]}'
+        )
+        categorizer = MemoryCategorizer(memory, [{"work": "Work facts"}])
+
+        assignments = categorizer.classify_add_result(
+            {"results": [{"id": "m1", "memory": "Met the team yesterday", "event": "ADD"}]},
+            observation_time="2026-09-11T09:00:00+09:00",
+        )
+        applied = categorizer.apply(assignments)
+
+        self.assertEqual(len(memory.llm.calls), 1)
+        self.assertEqual(applied, 1)
+        self.assertEqual(
+            memory.vector_store.updates[0]["payload"],
+            {
+                "categories": ["work"],
+                "event_start": "2026-09-10T14:00:00+09:00",
+                "event_end": "2026-09-10T15:00:00+09:00",
+                "temporal_kind": "occurrence",
+            },
+        )
+        prompt = json.loads(memory.llm.calls[0]["messages"][1]["content"])
+        self.assertEqual(prompt["observation_time"], "2026-09-11T09:00:00+09:00")
+
+    def test_timestamp_can_enrich_time_without_overwriting_explicit_categories(self):
+        memory = make_memory(
+            '{"memories":[{"id":"m1","event_start":"2026-09-12T10:00:00+09:00",'
+            '"event_end":"2026-09-12T11:00:00+09:00","temporal_kind":"plan"}]}'
+        )
+        categorizer = MemoryCategorizer(memory, [{"work": "Work facts"}])
+
+        assignments = categorizer.classify_add_result(
+            {"results": [{"id": "m1", "memory": "Meet tomorrow", "event": "ADD"}]},
+            observation_time="2026-09-11T09:00:00+09:00",
+            classify_categories=False,
+        )
+        categorizer.apply(assignments)
+
+        self.assertEqual(
+            memory.vector_store.updates[0]["payload"],
+            {
+                "event_start": "2026-09-12T10:00:00+09:00",
+                "event_end": "2026-09-12T11:00:00+09:00",
+                "temporal_kind": "plan",
+            },
+        )
+        self.assertNotIn("categories", json.loads(memory.llm.calls[0]["messages"][1]["content"]))
+
+    def test_invalid_temporal_fields_are_ignored_but_category_is_kept(self):
+        memory = make_memory(
+            '{"memories":[{"id":"m1","categories":["work"],'
+            '"event_start":"2026-09-10T14:00:00","event_end":"bad","temporal_kind":"occurrence"}]}'
+        )
+        categorizer = MemoryCategorizer(memory, [{"work": "Work facts"}])
+
+        assignments = categorizer.classify_add_result(
+            {"results": [{"id": "m1", "memory": "Met yesterday", "event": "ADD"}]},
+            observation_time="2026-09-11T09:00:00+09:00",
+        )
+        categorizer.apply(assignments)
+
+        self.assertEqual(memory.vector_store.updates[0]["payload"], {"categories": ["work"]})
+
     def test_unknown_category_and_hallucinated_id_are_ignored(self):
         memory = make_memory(
             '{"memories":[{"id":"m1","categories":["not_allowed"]},{"id":"made-up","categories":["work"]}]}'

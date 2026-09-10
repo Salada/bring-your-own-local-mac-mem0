@@ -36,6 +36,7 @@ from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
 from categories import CategoryWorker, MemoryCategorizer  # noqa: E402
 from memory_guards import validate_current  # noqa: E402
 from memory_listing import list_memory_page  # noqa: E402
+from temporal import TemporalReasoner, iso_timestamp, temporal_add_prompt  # noqa: E402
 
 logger = logging.getLogger("mem0-server.mcp")
 DEFAULT_USER_ID = os.environ.get("MEM0_DEFAULT_USER_ID", "local-user")
@@ -142,11 +143,13 @@ def create_mcp_server(
     memory: Memory,
     categorizer: Optional[MemoryCategorizer] = None,
     category_worker: Optional[CategoryWorker] = None,
+    temporal_reasoner: Optional[TemporalReasoner] = None,
 ) -> FastMCP:
     """Initialize FastMCP server with comprehensive Mem0 toolset."""
     mcp = FastMCP("mem0", instructions=MCP_INSTRUCTIONS)
     categorizer = categorizer or MemoryCategorizer(memory)
     category_worker = category_worker or CategoryWorker(categorizer, mutation_lock)
+    temporal_reasoner = temporal_reasoner or TemporalReasoner(memory)
     mcp.settings.streamable_http_path = "/"
 
     @mcp.tool()
@@ -160,6 +163,8 @@ def create_mcp_server(
         limit: Optional[int] = None,
         rerank: bool = False,
         threshold: float = 0.5,
+        reference_date: Optional[str] = None,
+        explain: bool = False,
     ) -> str:
         """Semantic search across stored memories with filters.
 
@@ -171,12 +176,14 @@ def create_mcp_server(
         max_items = limit or top_k or 10
         norm_filters = normalize_filters(filters, user_id=user_id, agent_id=agent_id, run_id=run_id)
         try:
-            res = memory.search(
+            res = temporal_reasoner.search(
                 query=query,
                 filters=norm_filters,
                 top_k=max_items,
                 threshold=threshold,
                 rerank=rerank,
+                reference_date=reference_date,
+                explain=explain,
             )
             items = res.get("results", []) if isinstance(res, dict) else res if isinstance(res, list) else []
             filtered = []
@@ -258,6 +265,7 @@ def create_mcp_server(
         metadata: Optional[dict] = None,
         infer: bool = True,
         custom_categories: Optional[list[dict[str, str]]] = None,
+        timestamp: Optional[str] = None,
     ) -> str:
         """Save text, conversation history, or facts into Mem0 memory.
 
@@ -267,6 +275,10 @@ def create_mcp_server(
         if app_id and "app_id" not in meta:
             meta["app_id"] = app_id
         try:
+            observation_time = iso_timestamp(timestamp, "timestamp") if timestamp is not None else None
+            enrichment_time = observation_time or datetime.now(timezone.utc).isoformat()
+            if observation_time:
+                meta["created_at"] = observation_time
             resolved_categories = None if meta.get("categories") else categorizer.catalog(custom_categories)
             with mutation_lock():
                 res = memory.add(
@@ -275,9 +287,18 @@ def create_mcp_server(
                     agent_id=agent_id,
                     metadata=meta or None,
                     infer=infer,
+                    prompt=(
+                        temporal_add_prompt(observation_time, getattr(memory, "custom_instructions", None))
+                        if observation_time
+                        else None
+                    ),
                 )
-            if not meta.get("categories"):
-                category_worker.submit(res, resolved_categories)
+            category_worker.submit(
+                res,
+                resolved_categories,
+                observation_time=enrichment_time,
+                classify_categories=not bool(meta.get("categories")),
+            )
             return json.dumps(res, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in add_memory: %s", e)
@@ -292,6 +313,7 @@ def create_mcp_server(
         metadata: Optional[dict] = None,
         infer: bool = True,
         custom_categories: Optional[list[dict[str, str]]] = None,
+        timestamp: Optional[str] = None,
     ) -> str:
         """Save knowledge or facts into Mem0 (alias for add_memory)."""
         return add_memory(
@@ -302,6 +324,7 @@ def create_mcp_server(
             metadata=metadata,
             infer=infer,
             custom_categories=custom_categories,
+            timestamp=timestamp,
         )
 
     @mcp.tool()

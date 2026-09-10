@@ -8,6 +8,7 @@ import os
 import pathlib
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import uvicorn
@@ -45,6 +46,7 @@ from memory_listing import (  # noqa: E402
     list_memory_page,
     to_openmemory_item,
 )
+from temporal import TemporalReasoner, iso_timestamp, temporal_add_prompt  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,7 +127,8 @@ if incomplete_restore.exists():
 memory, project_categories = load_memory()
 categorizer = MemoryCategorizer(memory, project_categories)
 category_worker = CategoryWorker(categorizer, mutation_lock)
-mcp = create_mcp_server(memory, categorizer, category_worker)
+temporal_reasoner = TemporalReasoner(memory)
+mcp = create_mcp_server(memory, categorizer, category_worker, temporal_reasoner)
 
 
 @asynccontextmanager
@@ -170,6 +173,7 @@ class AddMemoryRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     infer: bool = True
     custom_categories: Optional[list[dict[str, str]]] = None
+    timestamp: Optional[datetime] = None
 
 
 class CategoryBackfillRequest(BaseModel):
@@ -194,6 +198,9 @@ class SearchMemoryRequest(BaseModel):
     limit: Optional[int] = 10
     top_k: Optional[int] = None
     filters: Optional[Dict[str, Any]] = None
+    reference_date: Optional[datetime] = None
+    threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    explain: bool = Field(default=False, description="Include details when temporal reranking runs")
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -251,7 +258,12 @@ def health():
 def add_memory(req: AddMemoryRequest):
     """Add new memory item or extract facts from messages."""
     try:
-        explicit_categories = (req.metadata or {}).get("categories")
+        metadata = dict(req.metadata) if req.metadata else {}
+        observation_time = iso_timestamp(req.timestamp, "timestamp") if req.timestamp is not None else None
+        enrichment_time = observation_time or datetime.now(timezone.utc).isoformat()
+        if observation_time:
+            metadata["created_at"] = observation_time
+        explicit_categories = metadata.get("categories")
         resolved_categories = None if explicit_categories else categorizer.catalog(req.custom_categories)
         with mutation_lock():
             res = memory.add(
@@ -259,11 +271,20 @@ def add_memory(req: AddMemoryRequest):
                 user_id=req.user_id,
                 agent_id=req.agent_id,
                 run_id=req.run_id,
-                metadata=req.metadata,
+                metadata=metadata or None,
                 infer=req.infer,
+                prompt=(
+                    temporal_add_prompt(observation_time, getattr(memory, "custom_instructions", None))
+                    if observation_time
+                    else None
+                ),
             )
-        if not explicit_categories:
-            category_worker.submit(res, resolved_categories)
+        category_worker.submit(
+            res,
+            resolved_categories,
+            observation_time=enrichment_time,
+            classify_categories=not bool(explicit_categories),
+        )
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
@@ -290,7 +311,14 @@ def search_memory(req: SearchMemoryRequest):
         )
 
         max_items = req.top_k or req.limit or 10
-        res = memory.search(query=req.query, filters=filters, top_k=max_items)
+        res = temporal_reasoner.search(
+            query=req.query,
+            filters=filters,
+            top_k=max_items,
+            reference_date=req.reference_date,
+            threshold=req.threshold,
+            explain=req.explain,
+        )
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
