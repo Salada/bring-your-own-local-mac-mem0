@@ -2,6 +2,7 @@ import unittest
 from contextlib import nullcontext
 from threading import Event
 from types import SimpleNamespace
+from unittest import mock
 
 from categories import (
     DEFAULT_CATEGORIES,
@@ -75,10 +76,9 @@ class CategoryInferenceTest(unittest.TestCase):
 
         assignments = categorizer.classify_add_result(result, [{"work": "Technical work"}])
         applied = categorizer.apply(assignments)
-        categorizer.annotate_result(result, assignments)
 
         self.assertEqual(applied, 1)
-        self.assertEqual(result["results"][0]["categories"], ["work"])
+        self.assertEqual(assignments[0].categories, ["work"])
         self.assertEqual(
             memory.vector_store.updates,
             [{"vector_id": "m1", "vector": None, "payload": {"categories": ["work"]}}],
@@ -140,6 +140,20 @@ class CategoryInferenceTest(unittest.TestCase):
         self.assertEqual(future.result(timeout=2), 1)
         worker.shutdown()
         self.assertEqual(memory.vector_store.updates[0]["payload"], {"categories": ["work"]})
+
+    def test_background_payload_failure_is_logged_and_contained(self):
+        memory = make_memory('{"memories":[{"id":"m1","categories":["work"]}]}')
+        memory.vector_store.update = mock.Mock(side_effect=RuntimeError("qdrant unavailable"))
+        worker = CategoryWorker(MemoryCategorizer(memory, [{"work": "Work facts"}]), nullcontext)
+
+        with self.assertLogs("mem0-server.categories", level="ERROR") as logs:
+            result = worker.submit({"results": [{"id": "m1", "memory": "Uses Python", "event": "ADD"}]}).result(
+                timeout=2
+            )
+
+        worker.shutdown()
+        self.assertEqual(result, 0)
+        self.assertIn("memory remains available for backfill", logs.output[0])
 
 
 if __name__ == "__main__":

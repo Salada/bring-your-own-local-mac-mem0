@@ -267,8 +267,7 @@ def create_mcp_server(
         if app_id and "app_id" not in meta:
             meta["app_id"] = app_id
         try:
-            if not meta.get("categories"):
-                categorizer.catalog(custom_categories)
+            resolved_categories = None if meta.get("categories") else categorizer.catalog(custom_categories)
             with mutation_lock():
                 res = memory.add(
                     text,
@@ -278,7 +277,7 @@ def create_mcp_server(
                     infer=infer,
                 )
             if not meta.get("categories"):
-                category_worker.submit(res, custom_categories)
+                category_worker.submit(res, resolved_categories)
             return json.dumps(res, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in add_memory: %s", e)

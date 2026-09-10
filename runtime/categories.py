@@ -166,15 +166,6 @@ class MemoryCategorizer:
             count += 1
         return count
 
-    @staticmethod
-    def annotate_result(result: Any, assignments: Iterable[CategoryAssignment]) -> Any:
-        by_id = {assignment.memory_id: assignment.categories for assignment in assignments}
-        rows = result.get("results", []) if isinstance(result, dict) else result if isinstance(result, list) else []
-        for row in rows:
-            if isinstance(row, dict) and str(row.get("id")) in by_id:
-                row["categories"] = by_id[str(row["id"])]
-        return result
-
     def safely_classify_add_result(
         self,
         result: Any,
@@ -203,18 +194,22 @@ class CategoryWorker:
     def submit(
         self,
         result: Any,
-        custom_categories: Optional[list[dict[str, str]]] = None,
+        resolved_categories: Optional[list[dict[str, str]]] = None,
     ) -> Future[int]:
         snapshot = deepcopy(result)
-        catalog = self.categorizer.catalog(custom_categories)
+        catalog = deepcopy(resolved_categories or self.categorizer.project_categories)
         return self.executor.submit(self._process, snapshot, catalog)
 
     def _process(self, result: Any, catalog: list[dict[str, str]]) -> int:
         assignments = self.categorizer.safely_classify_add_result(result, catalog)
         if not assignments:
             return 0
-        with self.mutation_context():
-            return self.categorizer.apply(assignments)
+        try:
+            with self.mutation_context():
+                return self.categorizer.apply(assignments)
+        except Exception:
+            logger.exception("Category payload update failed; memory remains available for backfill")
+            return 0
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=False)

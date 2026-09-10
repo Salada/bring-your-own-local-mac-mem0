@@ -244,8 +244,8 @@ def health():
 def add_memory(req: AddMemoryRequest):
     """Add new memory item or extract facts from messages."""
     try:
-        if not (req.metadata or {}).get("categories"):
-            categorizer.catalog(req.custom_categories)
+        explicit_categories = (req.metadata or {}).get("categories")
+        resolved_categories = None if explicit_categories else categorizer.catalog(req.custom_categories)
         with mutation_lock():
             res = memory.add(
                 messages=req.messages,
@@ -255,9 +255,8 @@ def add_memory(req: AddMemoryRequest):
                 metadata=req.metadata,
                 infer=req.infer,
             )
-        explicit_categories = (req.metadata or {}).get("categories")
         if not explicit_categories:
-            category_worker.submit(res, req.custom_categories)
+            category_worker.submit(res, resolved_categories)
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
