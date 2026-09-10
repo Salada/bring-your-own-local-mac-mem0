@@ -187,6 +187,16 @@ worker, keeping the existing add response contract and latency. A worker failure
 never rolls back the memory itself; uncategorized records remain eligible for
 the explicit admin backfill below.
 
+REST and MCP add calls may also supply a timezone-aware `timestamp`. The same
+background worker then resolves clearly dated occurrences and plans into
+`event_start`, `event_end`, and `temporal_kind`, sharing the category LLM call
+when both features apply. Temporal search text is reranked automatically; an
+optional timezone-aware `reference_date` overrides the current-time anchor, and
+`explain=true` exposes the bounded boost. This is a local approximation, not the
+private Mem0 Platform ranking algorithm. See
+[`docs/temporal-reasoning.md`](../docs/temporal-reasoning.md) for behavior and
+limits.
+
 Inspect the active catalog or ask the configured LLM for a replacement preview.
 Recommendation sends only the supplied use-case text and does not persist its
 result:

@@ -79,6 +79,83 @@ class NormalizeFiltersTest(unittest.TestCase):
         self.assertEqual(memory.kwargs["threshold"], 0.5)
         self.assertFalse(memory.kwargs["rerank"])
 
+    def test_search_exposes_reference_date_and_temporal_explanation(self):
+        class MemoryStub:
+            def search(self, **_kwargs):
+                return {"results": []}
+
+        class TemporalReasonerStub:
+            def search(self, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "results": [
+                        {
+                            "id": "m1",
+                            "score": 0.8,
+                            "temporal_explanation": {"temporal_match": True},
+                        }
+                    ]
+                }
+
+        reasoner = TemporalReasonerStub()
+        mcp = create_mcp_server(MemoryStub(), temporal_reasoner=reasoner)
+        tools = asyncio.run(mcp.list_tools())
+        search = next(tool for tool in tools if tool.name == "search_memories")
+
+        self.assertIn("reference_date", search.inputSchema["properties"])
+        self.assertIn("explain", search.inputSchema["properties"])
+        _, result = asyncio.run(
+            mcp.call_tool(
+                "search_memories",
+                {
+                    "query": "What happened yesterday?",
+                    "reference_date": "2026-09-11T09:00:00+09:00",
+                    "explain": True,
+                },
+            )
+        )
+
+        payload = json.loads(result["result"])
+        self.assertTrue(payload["results"][0]["temporal_explanation"]["temporal_match"])
+        self.assertEqual(reasoner.kwargs["reference_date"], "2026-09-11T09:00:00+09:00")
+        self.assertTrue(reasoner.kwargs["explain"])
+
+    def test_add_timestamp_sets_import_time_and_enrichment_anchor(self):
+        class MemoryStub:
+            def add(self, *_args, **kwargs):
+                self.kwargs = kwargs
+                return {"results": [{"id": "m1", "memory": "Met yesterday", "event": "ADD"}]}
+
+        class CategorizerStub:
+            def catalog(self, categories):
+                self.categories = categories
+                return [{"work": "Work facts"}]
+
+        class WorkerStub:
+            def submit(self, result, categories, **kwargs):
+                self.call = (result, categories, kwargs)
+
+        memory = MemoryStub()
+        categorizer = CategorizerStub()
+        worker = WorkerStub()
+        mcp = create_mcp_server(memory, categorizer=categorizer, category_worker=worker)
+        tools = asyncio.run(mcp.list_tools())
+        add = next(tool for tool in tools if tool.name == "add_memory")
+        self.assertIn("timestamp", add.inputSchema["properties"])
+
+        _, result = asyncio.run(
+            mcp.call_tool(
+                "add_memory",
+                {"text": "Met yesterday", "timestamp": "2026-09-11T09:00:00+09:00"},
+            )
+        )
+
+        self.assertIn("results", json.loads(result["result"]))
+        self.assertEqual(memory.kwargs["metadata"]["created_at"], "2026-09-11T09:00:00+09:00")
+        self.assertIn("observed at 2026-09-11T09:00:00+09:00", memory.kwargs["prompt"])
+        self.assertEqual(worker.call[2]["observation_time"], "2026-09-11T09:00:00+09:00")
+        self.assertTrue(worker.call[2]["classify_categories"])
+
     def test_only_guarded_single_delete_is_exposed_over_mcp(self):
         mcp = create_mcp_server(object())
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
