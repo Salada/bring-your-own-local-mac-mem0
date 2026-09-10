@@ -120,6 +120,7 @@ previously installed:
 
 ```bash
 $HOME/.config/mem0/bin/mem0-ctl codex-hooks uninstall
+python3 plugins/mem0-local/core/memory_cli.py preflight
 codex plugin marketplace add /absolute/path/to/bring-your-own-local-mac-mem0
 codex plugin add mem0-local@byolm-mem0
 ```

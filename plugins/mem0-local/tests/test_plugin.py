@@ -6,6 +6,8 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +17,7 @@ sys.path.insert(0, str(PLUGIN / "core"))
 import flush_worker
 import local_memory
 import mcp_server
+import memory_cli
 
 
 class EnvironmentMixin:
@@ -213,6 +216,24 @@ class HookTests(EnvironmentMixin, unittest.TestCase):
         )
         self.assertEqual(local_memory.status(self.data_dir)["pending_events"], 0)
 
+    def test_balanced_flushes_at_ten_events(self):
+        with local_memory.connect(self.data_dir) as database:
+            key = local_memory.session_key(self.event)
+            local_memory.ensure_session(database, key, "demo", "/work/demo")
+            for number in range(9):
+                local_memory.record_event(
+                    database, key, "tool", "assistant", f"result {number}"
+                )
+        with mock.patch.object(local_memory, "spawn_flush") as spawn:
+            local_memory.process_hook(
+                "stop",
+                {**self.event, "last_assistant_message": "tenth event"},
+                self.data_dir,
+            )
+        spawn.assert_called_once_with(
+            self.data_dir, local_memory.session_key(self.event), "stop"
+        )
+
 
 class FlushTests(unittest.TestCase):
     def test_successful_flush_deletes_claimed_events(self):
@@ -274,6 +295,72 @@ class FlushTests(unittest.TestCase):
                     "inflight",
                 )
 
+    def test_stale_inflight_event_is_reclaimed(self):
+        with tempfile.TemporaryDirectory() as root:
+            data_dir = Path(root)
+            with local_memory.connect(data_dir) as database:
+                database.execute(
+                    "INSERT INTO events(session_key, kind, role, content, status, batch_id, claimed_at, created_at, digest) "
+                    "VALUES('s', 'prompt', 'user', 'old content', 'inflight', 'batch', ?, 0, 'digest')",
+                    (time.time() - 301,),
+                )
+                database.commit()
+                local_memory.recover_inflight(database)
+                self.assertEqual(
+                    database.execute("SELECT status FROM events").fetchone()[0],
+                    "pending",
+                )
+
+
+class CliTests(EnvironmentMixin, unittest.TestCase):
+    def test_preflight_detects_legacy_hook_without_printing_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "hooks.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "Stop": [
+                                {
+                                    "hooks": [
+                                        {"command": "/private/codex_hook.py capture"}
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["memory_cli.py", "preflight", "--codex-hooks-file", str(path)],
+                ),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(memory_cli.main(), 2)
+        self.assertIn("Legacy Mem0 Codex hooks", output.getvalue())
+        self.assertNotIn("/private/", output.getvalue())
+
+    def test_status_reports_invalid_profile_without_traceback(self):
+        os.environ["MEM0_CODEX_MEMORY_PROFILE"] = "invalid"
+        with tempfile.TemporaryDirectory() as root:
+            output = StringIO()
+            with (
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["memory_cli.py", "status", "--plugin-data-dir", root],
+                ),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(memory_cli.main(), 2)
+        self.assertIn("configuration error", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
 
 class ContractTests(unittest.TestCase):
     def test_all_documented_hooks_are_declared(self):
@@ -297,6 +384,40 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]], ["search_memories"]
         )
+
+    def test_mcp_tools_call_returns_bounded_local_results(self):
+        result = {"id": "m1", "memory": "A durable choice", "score": 0.9}
+        with mock.patch.object(
+            mcp_server, "search_memories", return_value=[result]
+        ) as search:
+            called = mcp_server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_memories",
+                        "arguments": {"query": "choice", "top_k": 50},
+                    },
+                }
+            )
+        search.assert_called_once_with(
+            "choice", PLUGIN.parent.parent.name, limit=20, threshold=None
+        )
+        payload = json.loads(called["result"]["content"][0]["text"])
+        self.assertEqual(payload["results"][0]["memory"], "A durable choice")
+
+    def test_manifest_and_marketplace_paths_resolve(self):
+        manifest = json.loads(
+            (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue((PLUGIN / manifest["skills"].removeprefix("./")).is_dir())
+        self.assertTrue((PLUGIN / manifest["mcpServers"].removeprefix("./")).is_file())
+        repository = PLUGIN.parents[1]
+        marketplace_path = repository / ".agents" / "plugins" / "marketplace.json"
+        marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
+        source = marketplace["plugins"][0]["source"]["path"].removeprefix("./")
+        self.assertEqual((repository / source).resolve(), PLUGIN.resolve())
 
 
 if __name__ == "__main__":

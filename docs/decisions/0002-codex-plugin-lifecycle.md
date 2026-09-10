@@ -57,8 +57,12 @@ Short-lived transcript evidence is stored locally until successful extraction,
 so plugin data must remain private and excluded from version control. A crashed
 worker leaves evidence recoverable on the next session start. Detached flushes
 are eventually consistent, and session-end cannot promise completion before the
-Codex process exits. Invalid profile values fail open and are written only as a
-redacted error type/message.
+Codex process exits. Delivery is at least once: if the service accepts a batch but
+the worker cannot observe the response, retry may produce a near-duplicate fact.
+When Mem0 is unavailable, session recovery can start one bounded worker per
+pending session; every worker times out and returns its batch to pending. Invalid
+profile values fail open in hooks and produce a concise configuration error in
+the status CLI, without exposing queued content.
 
 ## Rejected alternatives
 

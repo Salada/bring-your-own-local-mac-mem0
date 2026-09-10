@@ -122,6 +122,28 @@ def set_paused(data_dir: Path, paused: bool) -> None:
         )
 
 
+def legacy_hooks_present(path: Path | None = None) -> bool:
+    hooks_path = path or Path.home() / ".codex" / "hooks.json"
+    if not hooks_path.is_file():
+        return False
+    try:
+        payload = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    def contains(value: Any) -> bool:
+        if isinstance(value, dict):
+            command = value.get("command")
+            if isinstance(command, str) and "codex_hook.py" in command:
+                return True
+            return any(contains(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains(item) for item in value)
+        return False
+
+    return contains(payload)
+
+
 def session_key(event: dict[str, Any]) -> str:
     raw = f"{event.get('session_id') or 'unknown'}\0{event.get('cwd') or ''}"
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
