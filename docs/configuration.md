@@ -70,6 +70,10 @@ one-key objects mapping a category name to its description. Per-request
 `custom_categories` replace this project-level list. If both are omitted, the
 runtime uses the Platform's 15 built-in category names. Category inference uses
 the configured Mem0 LLM and stores the selected category in Qdrant metadata.
+New-memory category enrichment runs on a single background worker so it does
+not add another LLM round trip to the OSS add response. The stored memory is
+still available if enrichment fails or the process stops; admin backfill can
+classify any record left without categories.
 
 Existing records are not silently recategorized when configuration changes.
 Preview a bounded backfill first, then explicitly apply it (the apply command

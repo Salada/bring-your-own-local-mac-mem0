@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, ContextManager, Iterable, Optional
 
 logger = logging.getLogger("mem0-server.categories")
 
@@ -184,3 +186,35 @@ class MemoryCategorizer:
         except Exception as exc:
             logger.warning("Category inference failed after memory write: %s", exc)
             return []
+
+
+class CategoryWorker:
+    """Run post-write category enrichment without delaying add responses."""
+
+    def __init__(
+        self,
+        categorizer: MemoryCategorizer,
+        mutation_context: Callable[[], ContextManager[Any]],
+    ):
+        self.categorizer = categorizer
+        self.mutation_context = mutation_context
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mem0-categories")
+
+    def submit(
+        self,
+        result: Any,
+        custom_categories: Optional[list[dict[str, str]]] = None,
+    ) -> Future[int]:
+        snapshot = deepcopy(result)
+        catalog = self.categorizer.catalog(custom_categories)
+        return self.executor.submit(self._process, snapshot, catalog)
+
+    def _process(self, result: Any, catalog: list[dict[str, str]]) -> int:
+        assignments = self.categorizer.safely_classify_add_result(result, catalog)
+        if not assignments:
+            return 0
+        with self.mutation_context():
+            return self.categorizer.apply(assignments)
+
+    def shutdown(self) -> None:
+        self.executor.shutdown(wait=True, cancel_futures=False)

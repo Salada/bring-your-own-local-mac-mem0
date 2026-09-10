@@ -29,6 +29,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
 from categories import (  # noqa: E402
+    CategoryWorker,
     MemoryCategorizer,
     category_catalog,
     pop_project_categories,
@@ -121,15 +122,19 @@ if incomplete_restore.exists():
 
 memory, project_categories = load_memory()
 categorizer = MemoryCategorizer(memory, project_categories)
-mcp = create_mcp_server(memory, categorizer)
+category_worker = CategoryWorker(categorizer, mutation_lock)
+mcp = create_mcp_server(memory, categorizer, category_worker)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage lifecycle of background services including Streamable HTTP session manager."""
     logger.info("Starting FastMCP Streamable HTTP session manager...")
-    async with mcp.session_manager.run():
-        yield
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        category_worker.shutdown()
     logger.info("Stopped FastMCP Streamable HTTP session manager.")
 
 
@@ -239,6 +244,8 @@ def health():
 def add_memory(req: AddMemoryRequest):
     """Add new memory item or extract facts from messages."""
     try:
+        if not (req.metadata or {}).get("categories"):
+            categorizer.catalog(req.custom_categories)
         with mutation_lock():
             res = memory.add(
                 messages=req.messages,
@@ -249,11 +256,8 @@ def add_memory(req: AddMemoryRequest):
                 infer=req.infer,
             )
         explicit_categories = (req.metadata or {}).get("categories")
-        assignments = [] if explicit_categories else categorizer.safely_classify_add_result(res, req.custom_categories)
-        if assignments:
-            with mutation_lock():
-                categorizer.apply(assignments)
-            categorizer.annotate_result(res, assignments)
+        if not explicit_categories:
+            category_worker.submit(res, req.custom_categories)
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}

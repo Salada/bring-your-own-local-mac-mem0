@@ -1,8 +1,11 @@
 import unittest
+from contextlib import nullcontext
+from threading import Event
 from types import SimpleNamespace
 
 from categories import (
     DEFAULT_CATEGORIES,
+    CategoryWorker,
     MemoryCategorizer,
     category_catalog,
     pop_project_categories,
@@ -114,6 +117,29 @@ class CategoryInferenceTest(unittest.TestCase):
 
         self.assertEqual(assignments, [])
         self.assertEqual(memory.vector_store.updates, [])
+
+    def test_background_worker_returns_before_classification_finishes(self):
+        release = Event()
+
+        class BlockingLLM(LLMStub):
+            def generate_response(self, **kwargs):
+                release.wait(timeout=2)
+                return super().generate_response(**kwargs)
+
+        memory = SimpleNamespace(
+            llm=BlockingLLM('{"memories":[{"id":"m1","categories":["work"]}]}'),
+            vector_store=VectorStoreStub(),
+        )
+        worker = CategoryWorker(MemoryCategorizer(memory, [{"work": "Work facts"}]), nullcontext)
+
+        future = worker.submit({"results": [{"id": "m1", "memory": "Uses Python", "event": "ADD"}]})
+
+        self.assertFalse(future.done())
+        self.assertEqual(memory.vector_store.updates, [])
+        release.set()
+        self.assertEqual(future.result(timeout=2), 1)
+        worker.shutdown()
+        self.assertEqual(memory.vector_store.updates[0]["payload"], {"categories": ["work"]})
 
 
 if __name__ == "__main__":
