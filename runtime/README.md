@@ -187,10 +187,11 @@ worker, keeping the existing add response contract and latency. A worker failure
 never rolls back the memory itself; uncategorized records remain eligible for
 the explicit admin backfill below.
 
-REST and MCP add calls may also supply a timezone-aware `timestamp`. The same
-background worker then resolves clearly dated occurrences and plans into
-`event_start`, `event_end`, and `temporal_kind`, sharing the category LLM call
-when both features apply. Temporal search text is reranked automatically; an
+The background worker resolves clearly dated occurrences and plans on every new
+write into `event_start`, `event_end`, and `temporal_kind`, sharing the category
+LLM call when both features apply. REST and MCP add calls may supply a
+timezone-aware `timestamp` to preserve and use an imported conversation's
+original time. Recognized temporal search text is reranked automatically; an
 optional timezone-aware `reference_date` overrides the current-time anchor, and
 `explain=true` exposes the bounded boost. This is a local approximation, not the
 private Mem0 Platform ranking algorithm. See

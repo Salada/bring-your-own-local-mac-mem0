@@ -16,11 +16,13 @@ OVERFETCH_FACTOR = 3
 TEMPORAL_KINDS = {"occurrence", "plan"}
 TEMPORAL_INTENTS = TEMPORAL_KINDS | {"any"}
 _TEMPORAL_CUE = re.compile(
-    r"(?:\b(?:today|yesterday|tomorrow|tonight|ago|before|after|during|since|until|when)\b|"
+    r"(?:\b(?:today|yesterday|tomorrow|tonight|when)\b|"
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:minute|hour|day|week|month|year)s?\s+ago\b|"
     r"\b(?:last|next)\s+(?:day|week|month|year|spring|summer|fall|autumn|winter|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b|"
     r"\bas\s+of\b|오늘|어제|내일|지난|(?:이번|다음)\s*(?:날|주|달|월|해|년|주말)|"
-    r"며칠\s*전|전날|당시|언제|이전|이후|부터|까지)",
+    r"작년|올해|내년|그제|모레|며칠\s*전|전날|당시|언제|이전|이후|부터|까지)",
     re.IGNORECASE,
 )
 
@@ -186,17 +188,19 @@ class TemporalReasoner:
         filters: dict[str, Any],
         top_k: int,
         reference_date: datetime | str | None = None,
-        threshold: float = 0.5,
-        rerank: bool = False,
+        threshold: Optional[float] = None,
+        rerank: Optional[bool] = None,
         explain: bool = False,
     ) -> Any:
-        baseline_kwargs = {
+        baseline_kwargs: dict[str, Any] = {
             "query": query,
             "filters": filters,
             "top_k": top_k,
-            "threshold": threshold,
-            "rerank": rerank,
         }
+        if threshold is not None:
+            baseline_kwargs["threshold"] = threshold
+        if rerank is not None:
+            baseline_kwargs["rerank"] = rerank
         if not has_temporal_cue(query):
             if reference_date is not None:
                 iso_timestamp(reference_date, "reference_date")
@@ -212,13 +216,20 @@ class TemporalReasoner:
             logger.warning("Temporal query parsing failed; using semantic search: %s", exc)
             return self.memory.search(**baseline_kwargs)
 
-        result = self.memory.search(**{**baseline_kwargs, "top_k": max(top_k, top_k * OVERFETCH_FACTOR)})
+        temporal_threshold = 0.5 if threshold is None else threshold
+        result = self.memory.search(
+            **{
+                **baseline_kwargs,
+                "top_k": max(top_k, top_k * OVERFETCH_FACTOR),
+                "threshold": temporal_threshold,
+            }
+        )
         items = result.get("results", []) if isinstance(result, dict) else result if isinstance(result, list) else []
         reranked = rerank_temporal_results(
             [item for item in items if isinstance(item, dict)],
             interval,
             limit=top_k,
-            threshold=threshold,
+            threshold=temporal_threshold,
             explain=explain,
         )
         return {**result, "results": reranked} if isinstance(result, dict) else {"results": reranked}

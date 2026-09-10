@@ -8,7 +8,7 @@ import os
 import pathlib
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import uvicorn
@@ -46,7 +46,7 @@ from memory_listing import (  # noqa: E402
     list_memory_page,
     to_openmemory_item,
 )
-from temporal import TemporalReasoner, has_temporal_cue, iso_timestamp, temporal_add_prompt  # noqa: E402
+from temporal import TemporalReasoner, iso_timestamp, temporal_add_prompt  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,8 +199,8 @@ class SearchMemoryRequest(BaseModel):
     top_k: Optional[int] = None
     filters: Optional[Dict[str, Any]] = None
     reference_date: Optional[datetime] = None
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    explain: bool = False
+    threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    explain: bool = Field(default=False, description="Include details when temporal reranking runs")
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -260,6 +260,7 @@ def add_memory(req: AddMemoryRequest):
     try:
         metadata = dict(req.metadata) if req.metadata else {}
         observation_time = iso_timestamp(req.timestamp, "timestamp") if req.timestamp is not None else None
+        enrichment_time = observation_time or datetime.now(timezone.utc).isoformat()
         if observation_time:
             metadata["created_at"] = observation_time
         explicit_categories = metadata.get("categories")
@@ -278,13 +279,12 @@ def add_memory(req: AddMemoryRequest):
                     else None
                 ),
             )
-        if not explicit_categories or observation_time:
-            category_worker.submit(
-                res,
-                resolved_categories,
-                observation_time=observation_time,
-                classify_categories=not bool(explicit_categories),
-            )
+        category_worker.submit(
+            res,
+            resolved_categories,
+            observation_time=enrichment_time,
+            classify_categories=not bool(explicit_categories),
+        )
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}
@@ -311,17 +311,14 @@ def search_memory(req: SearchMemoryRequest):
         )
 
         max_items = req.top_k or req.limit or 10
-        if req.reference_date is None and not has_temporal_cue(req.query):
-            res = memory.search(query=req.query, filters=filters, top_k=max_items)
-        else:
-            res = temporal_reasoner.search(
-                query=req.query,
-                filters=filters,
-                top_k=max_items,
-                reference_date=req.reference_date,
-                threshold=req.threshold,
-                explain=req.explain,
-            )
+        res = temporal_reasoner.search(
+            query=req.query,
+            filters=filters,
+            top_k=max_items,
+            reference_date=req.reference_date,
+            threshold=req.threshold,
+            explain=req.explain,
+        )
         if isinstance(res, dict) and "results" in res:
             return res
         return {"results": res if isinstance(res, list) else []}

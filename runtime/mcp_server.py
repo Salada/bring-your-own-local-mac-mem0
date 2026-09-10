@@ -276,6 +276,7 @@ def create_mcp_server(
             meta["app_id"] = app_id
         try:
             observation_time = iso_timestamp(timestamp, "timestamp") if timestamp is not None else None
+            enrichment_time = observation_time or datetime.now(timezone.utc).isoformat()
             if observation_time:
                 meta["created_at"] = observation_time
             resolved_categories = None if meta.get("categories") else categorizer.catalog(custom_categories)
@@ -292,13 +293,12 @@ def create_mcp_server(
                         else None
                     ),
                 )
-            if not meta.get("categories") or observation_time:
-                category_worker.submit(
-                    res,
-                    resolved_categories,
-                    observation_time=observation_time,
-                    classify_categories=not bool(meta.get("categories")),
-                )
+            category_worker.submit(
+                res,
+                resolved_categories,
+                observation_time=enrichment_time,
+                classify_categories=not bool(meta.get("categories")),
+            )
             return json.dumps(res, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in add_memory: %s", e)

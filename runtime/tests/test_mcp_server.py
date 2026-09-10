@@ -156,6 +156,27 @@ class NormalizeFiltersTest(unittest.TestCase):
         self.assertEqual(worker.call[2]["observation_time"], "2026-09-11T09:00:00+09:00")
         self.assertTrue(worker.call[2]["classify_categories"])
 
+    def test_ordinary_add_still_schedules_temporal_enrichment(self):
+        class MemoryStub:
+            def add(self, *_args, **_kwargs):
+                return {"results": [{"id": "m1", "memory": "Meeting next week", "event": "ADD"}]}
+
+        class CategorizerStub:
+            def catalog(self, _categories):
+                return [{"work": "Work facts"}]
+
+        class WorkerStub:
+            def submit(self, _result, _categories, **kwargs):
+                self.kwargs = kwargs
+
+        worker = WorkerStub()
+        mcp = create_mcp_server(MemoryStub(), categorizer=CategorizerStub(), category_worker=worker)
+
+        asyncio.run(mcp.call_tool("add_memory", {"text": "Meeting next week"}))
+
+        self.assertRegex(worker.kwargs["observation_time"], r"\+00:00$")
+        self.assertTrue(worker.kwargs["classify_categories"])
+
     def test_only_guarded_single_delete_is_exposed_over_mcp(self):
         mcp = create_mcp_server(object())
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}

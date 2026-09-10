@@ -34,8 +34,12 @@ class TemporalValidationTest(unittest.TestCase):
     def test_detects_english_and_korean_cues_without_matching_plain_queries(self):
         self.assertTrue(has_temporal_cue("What happened last week?"))
         self.assertTrue(has_temporal_cue("어제 무슨 회의가 있었지?"))
+        self.assertTrue(has_temporal_cue("작년에 뭘 했지?"))
+        self.assertTrue(has_temporal_cue("내년 계획은 뭐였지?"))
         self.assertFalse(has_temporal_cue("Which database did we choose?"))
         self.assertFalse(has_temporal_cue("What is my last name?"))
+        self.assertFalse(has_temporal_cue("Before committing, run lint."))
+        self.assertFalse(has_temporal_cue("Since we changed the API, what breaks?"))
 
     def test_temporal_add_prompt_preserves_existing_instructions(self):
         prompt = temporal_add_prompt("2026-09-11T09:00:00+09:00", "Keep Korean text in Korean.")
@@ -111,6 +115,20 @@ class TemporalRerankTest(unittest.TestCase):
 
 
 class TemporalReasonerTest(unittest.TestCase):
+    def test_non_temporal_query_without_options_preserves_original_call_shape(self):
+        class MemoryStub:
+            def search(self, **kwargs):
+                self.kwargs = kwargs
+                return {"results": []}
+
+        memory = MemoryStub()
+        TemporalReasoner(memory).search(query="Which database?", filters={"user_id": "u"}, top_k=4)
+
+        self.assertEqual(
+            memory.kwargs,
+            {"query": "Which database?", "filters": {"user_id": "u"}, "top_k": 4},
+        )
+
     def test_non_temporal_query_keeps_exact_baseline_call(self):
         class MemoryStub:
             def search(self, **kwargs):
@@ -179,6 +197,7 @@ class TemporalReasonerTest(unittest.TestCase):
 
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(memory.kwargs["top_k"], 9)
+        self.assertEqual(memory.kwargs["threshold"], 0.5)
 
     def test_temporal_query_uses_current_time_without_reference_date(self):
         class LLMStub:

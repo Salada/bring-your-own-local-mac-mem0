@@ -8,9 +8,10 @@ feature and explicitly says it is unavailable in the OSS SDK. The local REST and
 MCP adapters now implement the public `timestamp` and `reference_date` concepts at
 their own boundary without forwarding unsupported parameters into Mem0 OSS.
 
-Ordinary searches remain on the pre-existing semantic path. A Korean or English
-temporal cue automatically opts into temporal parsing and reranking. An optional
-timezone-aware `reference_date` replaces the current time as the query anchor.
+Ordinary searches remain on the pre-existing semantic path. Recognized common
+Korean or English temporal cues automatically opt into parsing and reranking. An
+optional timezone-aware `reference_date` replaces the current time as the query
+anchor; the cue detector is intentionally not a complete natural-language parser.
 
 ## What the current stack can support
 
@@ -18,7 +19,7 @@ timezone-aware `reference_date` replaces the current time as the query anchor.
 | --- | --- | --- |
 | Store event dates | `event_start`, `event_end`, and `temporal_kind` payloads | Implemented without re-embedding or a collection migration |
 | Filter ISO date ranges | The pinned Qdrant adapter builds `DatetimeRange` filters | Feasible |
-| Preserve import time | Adapter stores validated `created_at` and uses it to anchor extraction | Implemented for new writes |
+| Preserve import time | Adapter stores validated `created_at` and supplies a best-effort fact-extraction instruction | Implemented for timestamped imports |
 | Resolve `reference_date` | OSS rejects the parameter and performs semantic search only | Implemented in the local adapter |
 | Automatic event-date extraction | Shared category/temporal background enrichment | Implemented for new writes |
 | Exact Platform ranking behavior | The extraction schema and boost formula are not public | Not verifiable |
@@ -26,10 +27,12 @@ timezone-aware `reference_date` replaces the current time as the query anchor.
 The OSS extraction prompt already asks the LLM to turn relative phrases into
 absolute dates, but its call site does not consistently anchor imported text to a
 caller-supplied observation time. The adapter therefore performs structured
-temporal extraction in its existing post-write worker and adds a timestamp anchor
-to the normal OSS fact-extraction instructions. Existing configured extraction
-instructions are preserved. Category and temporal fields share one post-write LLM
-call when both are requested.
+temporal extraction in its existing post-write worker. For timestamped imports it
+also adds an observation-time instruction to the normal OSS fact-extraction
+prompt, while preserving existing configured instructions. Because the pinned OSS
+prompt still renders its own processing date, this text normalization is
+best-effort; only the post-write structured interval is validated. Category and
+temporal fields share one post-write LLM call when both are requested.
 
 Sources:
 
@@ -43,14 +46,16 @@ The parser-library comparison and deferral are recorded in
 
 ## Behavior
 
-1. Add accepts a timezone-aware `timestamp`, stores it as `created_at`, and uses
-   it only to resolve clearly dated occurrences and future plans.
+1. Every new add schedules temporal enrichment against the current time. A
+   timezone-aware `timestamp` replaces that anchor and is stored as `created_at`
+   to preserve an imported conversation's original time.
 2. The worker validates and stores `event_start`, `event_end`, and
    `temporal_kind`. An invalid or unavailable LLM response never rolls back the
    successful memory write.
-3. A cheap cue detector avoids the LLM for non-temporal text. Temporal text is
-   resolved once against the current time, or an optional timezone-aware
-   `reference_date`, into an interval and `occurrence`, `plan`, or `any` intent.
+3. A cheap cue detector avoids the search-time LLM for text without a recognized
+   cue. Recognized text is resolved once against the current time, or an optional
+   timezone-aware `reference_date`, into an interval and `occurrence`, `plan`, or
+   `any` intent.
 4. The adapter over-fetches semantic candidates, discards candidates below the
    semantic threshold, and adds a bounded `0.15` boost only to interval-and-intent
    matches. It then returns the requested number of items.
@@ -63,7 +68,7 @@ schema migration.
 
 ## Example
 
-```json
+```http
 POST /v1/memories
 {
   "messages": "I attended the local AI conference yesterday.",
@@ -71,7 +76,7 @@ POST /v1/memories
 }
 ```
 
-```json
+```http
 POST /v1/memories/search
 {
   "query": "What did I attend last week?",
@@ -90,9 +95,11 @@ The same optional fields are available on MCP `add_memory`/`add_memories` and
   present.
 - Background enrichment is eventually consistent, so a new memory may briefly
   have no temporal fields.
-- `currently`, `as of`, and duration questions require validity intervals rather
-  than a single event date. Start with dated occurrences and future plans; add
-  ongoing-state semantics only after dedicated evaluation.
+- The pinned OSS library may emit its informational Platform-only temporal notice
+  when a timestamped import stores `created_at`; the adapter does not forward the
+  unsupported `timestamp` argument and the write remains local.
+- Complex ongoing states, recurrence, and duration-linked event semantics are not
+  implemented. This release handles dated occurrences and future plans.
 - Exact SaaS scoring equivalence cannot be asserted without a public Platform
   extraction schema and ranking formula.
 - Existing memories are not automatically enriched. Historical backfill remains
