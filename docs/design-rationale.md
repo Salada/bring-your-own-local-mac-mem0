@@ -18,6 +18,12 @@ retain automatic memory with fewer paid calls and no Mem0 SaaS bill. See Mem0's
 [Codex integration](https://docs.mem0.ai/integrations/codex#option-a-plugin-marketplace-recommended)
 for the hosted plugin's current components and lifecycle behavior.
 
+That request pattern describes the plugin version originally evaluated for this
+project. Mem0 0.3.1 now searches only the first substantive prompt and batches
+locally recorded evidence before background extraction. The current comparison
+and a proposal for explicit conservative, balanced, and aggressive local policies
+are documented in [`memory-usage-profiles.md`](memory-usage-profiles.md).
+
 ## Opinionated component choices
 
 | Component | Default | Reason |
