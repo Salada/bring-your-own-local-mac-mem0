@@ -4,9 +4,9 @@ Portable local Mem0 runtime for Apple Silicon macOS. It runs Mem0 and MCP on the
 host, Qdrant and OpenMemory UI in containers, and oMLX as the local embedding
 server.
 
-The runtime currently pins the tested `mem0ai==2.0.19`. Upstream `2.0.20` is
-intentionally deferred until the local seven-day package-age gate admits it.
-Its `Makefile`, Ruff version,
+The runtime pins the tested `mem0ai==2.0.20`. This upgrade was explicitly
+approved without the normal seven-day package-age hold; the non-yanked release
+was verified from PyPI before updating the lockfile. Its `Makefile`, Ruff version,
 line length, lint selection, import sorting, and test targets follow the
 [upstream Mem0 Python project](https://github.com/mem0ai/mem0/blob/main/Makefile)
 and its
@@ -169,7 +169,7 @@ uv sync
 ```
 
 Set `GOOGLE_API_KEY` in `.env`. Do not put the key under `llm.config`; in
-Mem0 2.0.19 an explicit config value takes precedence over the environment.
+Mem0 2.0.20 an explicit config value takes precedence over the environment.
 The direct `google-genai` dependency is required by this default provider.
 
 `uv run python server.py` still starts Uvicorn in-process through

@@ -3,7 +3,7 @@
 # mem0-ctl — Global CLI Controller for Local Mem0 Ecosystem
 #
 # Topology:
-#   1. Mem0 Host-Native Server  (:11888) — uv run server.py (mem0ai==2.0.19)
+#   1. Mem0 Host-Native Server  (:11888) — uv run server.py (mem0ai==2.0.20)
 #   2. OpenMemory Web UI        (:11889) — Official Frontend Viewer for Mem0
 #   3. Qdrant Vector Store      (:6333)  — Vector embeddings storage
 #   4. oMLX Local Embedder      (:8898)  — Apple Silicon Metal acceleration

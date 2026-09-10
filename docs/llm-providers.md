@@ -3,14 +3,14 @@
 The `llm` block controls fact extraction and memory update decisions. It is
 independent of the local embedding model configured under `embedder`.
 
-The examples below target the pinned `mem0ai==2.0.19`. Provider support alone does
+The examples below target the pinned `mem0ai==2.0.20`. Provider support alone does
 not mean that this repository has tested the provider end to end.
 
 | Provider | Status in this project | Credential or dependency | Notes |
 | --- | --- | --- | --- |
-| [Google Gemini](https://docs.mem0.ai/components/llms/models/google-ai) | **Verified** on the source Apple Silicon stack with Mem0 2.0.19 | `GOOGLE_API_KEY` | Default and currently maintained path |
+| [Google Gemini](https://docs.mem0.ai/components/llms/models/google-ai) | **Verified** on the source Apple Silicon stack with Mem0 2.0.20 | `GOOGLE_API_KEY` | Default and currently maintained path |
 | Gemini on Vertex AI with custom HTTP options | **Configuration plumbing tested; custom gateway not tested end to end** | Application Default Credentials or gateway-specific auth | This runtime extends the pinned Mem0 adapter with `base_url` and `http_headers` |
-| [OpenAI](https://docs.mem0.ai/components/llms/models/openai) | **Configuration source-verified; not tested end to end** | `OPENAI_API_KEY` | `gpt-5.6-luna` is the current project recommendation; Mem0 2.0.19 itself defaults to `gpt-5-mini` |
+| [OpenAI](https://docs.mem0.ai/components/llms/models/openai) | **Configuration source-verified; not tested end to end** | `OPENAI_API_KEY` | `gpt-5.6-luna` is the current project recommendation; Mem0 2.0.20 itself defaults to `gpt-5-mini` |
 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing/) | **Experimental / not tested** | `DEEPSEEK_API_KEY` or an OpenAI-compatible profile | Lowest paid price in the author's comparison, but intentionally not the default for US-facing use |
 | [Ollama](https://docs.mem0.ai/components/llms/models/ollama) | **Experimental / not tested** | Ollama server and Python `ollama` package | Optional client is not installed by the default dependency set |
 | OpenAI-compatible local server | **Experimental / not tested** | Server-specific base URL and dummy/local key if required | Uses Mem0's `openai` provider; compatibility depends on tool calling and JSON output |
@@ -73,7 +73,7 @@ Local `.env`:
 GOOGLE_API_KEY=replace-locally
 ```
 
-Do not add `api_key` to the committed JSON example. Mem0 2.0.19 uses
+Do not add `api_key` to the committed JSON example. Mem0 2.0.20 uses
 `llm.config.api_key` before `GOOGLE_API_KEY`, so a stale explicit value can mask a
 correct environment value.
 
@@ -82,7 +82,7 @@ imports it. It is not an unused convenience dependency.
 
 ## Gemini on Vertex AI with a custom endpoint — plumbing tested
 
-The pinned Mem0 2.0.19 adapter supports `vertexai`, `project`, and `location`, but
+The pinned Mem0 2.0.20 adapter supports `vertexai`, `project`, and `location`, but
 does not forward the Google Gen AI SDK's HTTP options. This repository registers
 a narrow compatibility adapter under the same `gemini` provider name. `base_url`
 is the Gemini equivalent of `openai_base_url`; `http_headers` accepts arbitrary
@@ -149,7 +149,7 @@ OPENAI_API_KEY=replace-locally
 ```
 
 This shape matches the pinned Mem0 source, but no paid OpenAI request has been
-exercised as part of this repository validation. Mem0 2.0.19 falls back to
+exercised as part of this repository validation. Mem0 2.0.20 falls back to
 `gpt-5-mini` when `model` is omitted; that remains a compatibility fallback, not
 this project's current recommendation. See the official
 [GPT-5.6 Luna model page](https://developers.openai.com/api/docs/models/gpt-5.6-luna).
