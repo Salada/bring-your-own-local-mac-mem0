@@ -11,11 +11,18 @@ Use the local `mem0-admin` CLI for deterministic analysis and guarded mutation. 
 
 Resolve the active project to the literal basename of the current working directory and pass it with `--app-id` unless the user explicitly requests a user-wide operation. Never send a request to `api.mem0.ai`.
 
+## Category behavior
+
+- New memories are categorized automatically by the runtime's background enrichment worker. Do not invoke this skill for ordinary new writes.
+- `mem0-admin categorize` is only for an explicitly requested, user-wide backfill of existing records. Changing `custom_categories` does not by itself re-tag older memories.
+- Dry-run still sends eligible memory text to the configured LLM and can incur provider cost, but it does not update Qdrant. State this before running it.
+- Apply classifies again rather than replaying a frozen plan, so its LLM result can differ from the preview. Keep the same bound, require fresh approval, and report the resulting backup and counts.
+
 ## Modes
 
 - Deep context: run `mem0-admin context "<task>" --app-id "<project>"` and present only relevant results.
 - Review: run `mem0-admin review --app-id "<project>"`. This is read-only. Treat near-duplicate output as candidates, not facts; contradictions always require human judgment.
-- Category preview: because categorization is user-wide, confirm that scope, then run `mem0-admin categorize --dry-run --max-items <bound>`. Explain that this calls the configured LLM but does not change stored records.
+- Category preview: confirm the user-wide scope and LLM disclosure above, then run `mem0-admin categorize --dry-run --max-items <bound>`. Report `scanned`, `categorized`, `has_more`, and the proposed category counts before requesting approval.
 - Category apply: only after the user reviews the preview and approves the user-wide mutation, run `mem0-admin categorize --apply --max-items <same-bound> --yes`. Do not add `--overwrite` unless the user explicitly requests recategorizing records that already have categories.
 - Forget: first run `mem0-admin forget "<query>" --app-id "<project>"`. Show the candidates and ask the user to approve one exact memory ID. Only then run `mem0-admin forget --id "<id>" --yes`.
 - Dream preview: run `mem0-admin dream --dry-run --app-id "<project>"`. Show the plan path, action count, reasons, backup/recovery implications, and ask for approval.
