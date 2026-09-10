@@ -1,6 +1,6 @@
 ---
 name: mem0-local-admin
-description: Review and safely maintain the user's localhost Mem0 store through the deterministic mem0-admin CLI. Use only when explicitly invoked for deep context, memory audits, category backfill, targeted forgetting, or bounded dream cleanup; do not use for ordinary automatic recall or Cloud Mem0.
+description: Review and safely maintain the user's localhost Mem0 store through the deterministic mem0-admin CLI. Use only when explicitly invoked for deep context, memory audits, category catalog preview or backfill, targeted forgetting, or bounded dream cleanup; do not use for ordinary automatic recall or Cloud Mem0.
 ---
 
 # Mem0 Local Admin
@@ -14,6 +14,7 @@ Resolve the active project to the literal basename of the current working direct
 ## Category behavior
 
 - New memories are categorized automatically by the runtime's background enrichment worker. Do not invoke this skill for ordinary new writes.
+- `mem0-admin categories show` is read-only. `categories recommend` sends only the supplied use-case text to the configured LLM, may incur provider cost, and never persists its candidate catalog.
 - `mem0-admin categorize` is only for an explicitly requested, user-wide backfill of existing records. Changing `custom_categories` does not by itself re-tag older memories.
 - Dry-run still sends eligible memory text to the configured LLM and can incur provider cost, but it does not update Qdrant. State this before running it.
 - Apply classifies again rather than replaying a frozen plan, so its LLM result can differ from the preview. Keep the same bound, require fresh approval, and report the resulting backup and counts.
@@ -22,6 +23,7 @@ Resolve the active project to the literal basename of the current working direct
 
 - Deep context: run `mem0-admin context "<task>" --app-id "<project>"` and present only relevant results.
 - Review: run `mem0-admin review --app-id "<project>"`. This is read-only. Treat near-duplicate output as candidates, not facts; contradictions always require human judgment.
+- Category catalog: use `mem0-admin categories show` to inspect it. For an explicitly requested recommendation, disclose the LLM call and run `mem0-admin categories recommend "<use-case>"`; present the current catalog, candidate catalog, and complete replacement diff. Do not claim that preview changes configuration or memories.
 - Category preview: confirm the user-wide scope and LLM disclosure above, then run `mem0-admin categorize --dry-run --max-items <bound>`. Report `scanned`, `categorized`, `has_more`, and the proposed category counts before requesting approval.
 - Category apply: only after the user reviews the preview and approves the user-wide mutation, run `mem0-admin categorize --apply --max-items <same-bound> --yes`. Do not add `--overwrite` unless the user explicitly requests recategorizing records that already have categories.
 - Forget: first run `mem0-admin forget "<query>" --app-id "<project>"`. Show the candidates and ask the user to approve one exact memory ID. Only then run `mem0-admin forget --id "<id>" --yes`.

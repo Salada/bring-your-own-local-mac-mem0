@@ -1,3 +1,4 @@
+import json
 import unittest
 from contextlib import nullcontext
 from threading import Event
@@ -9,6 +10,7 @@ from categories import (
     CategoryWorker,
     MemoryCategorizer,
     category_catalog,
+    category_diff,
     pop_project_categories,
     validate_categories,
 )
@@ -67,8 +69,42 @@ class CategoryConfigTest(unittest.TestCase):
             [{"id": "work", "name": "work", "description": "Work facts"}],
         )
 
+    def test_category_diff_describes_complete_replacement(self):
+        self.assertEqual(
+            category_diff(
+                [{"work": "Old work"}, {"home": "Home facts"}],
+                [{"work": "New work"}, {"travel": "Travel facts"}],
+            ),
+            {
+                "added": [{"travel": "Travel facts"}],
+                "removed": [{"home": "Home facts"}],
+                "changed": [{"name": "work", "from": "Old work", "to": "New work"}],
+            },
+        )
+
 
 class CategoryInferenceTest(unittest.TestCase):
+    def test_catalog_recommendation_uses_only_supplied_context_and_never_applies(self):
+        memory = make_memory('{"custom_categories":[{"technology":"Technical decisions"}]}')
+        categorizer = MemoryCategorizer(memory, [{"personal": "Personal facts"}])
+
+        result = categorizer.recommend_catalog("A software engineering assistant", max_categories=3)
+
+        self.assertEqual(result, [{"technology": "Technical decisions"}])
+        self.assertEqual(memory.vector_store.updates, [])
+        prompt = memory.llm.calls[0]["messages"][1]["content"]
+        self.assertEqual(json.loads(prompt), {"use_case": "A software engineering assistant"})
+
+    def test_catalog_recommendation_rejects_oversized_result(self):
+        memory = make_memory('{"custom_categories":[{"work":"Work"},{"home":"Home"}]}')
+
+        with self.assertRaisesRegex(ValueError, "exceeds max_categories"):
+            MemoryCategorizer(memory).recommend_catalog("Personal assistant", max_categories=1)
+
+    def test_catalog_recommendation_requires_explicit_catalog_output(self):
+        with self.assertRaisesRegex(ValueError, "must include custom_categories"):
+            MemoryCategorizer(make_memory("{}")).recommend_catalog("Personal assistant")
+
     def test_per_call_categories_replace_project_catalog_and_apply_payload_only(self):
         memory = make_memory('{"memories":[{"id":"m1","categories":["work"]}]}')
         categorizer = MemoryCategorizer(memory, [{"personal": "Personal facts"}])

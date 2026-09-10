@@ -27,6 +27,19 @@ def item(memory_id, text, kind="decision", created="2026-09-01T00:00:00+00:00", 
 
 
 class Mem0AdminTest(unittest.TestCase):
+    def test_category_recommendation_is_preview_only(self):
+        response = {"mode": "preview", "applied": False, "recommended_categories": [{"work": "Work facts"}]}
+        with (
+            mock.patch.object(mem0_admin, "http_json", return_value=response) as request,
+            mock.patch.object(mem0_admin, "capture_backup") as backup,
+            mock.patch("builtins.print"),
+        ):
+            mem0_admin.recommend_categories("Coding assistant", 8)
+
+        backup.assert_not_called()
+        self.assertEqual(request.call_args.args, ("POST", "/v1/admin/categories/recommend"))
+        self.assertEqual(request.call_args.kwargs["data"], {"use_case": "Coding assistant", "max_categories": 8})
+
     def test_backup_prefers_sibling_command_without_path_dependency(self):
         completed = mock.Mock(stdout="[time] captured\n/backup/generation\n")
         with mock.patch.object(mem0_admin.subprocess, "run", return_value=completed) as run:

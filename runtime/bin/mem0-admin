@@ -584,6 +584,24 @@ def categorize_backfill(
     )
 
 
+def show_categories() -> None:
+    print(json.dumps(http_json("GET", "/v1/admin/categories"), ensure_ascii=False, indent=2))
+
+
+def recommend_categories(use_case: str, max_categories: int) -> None:
+    print(
+        "Category recommendation calls the configured LLM and may incur provider cost; no catalog is changed.",
+        file=sys.stderr,
+    )
+    response = http_json(
+        "POST",
+        "/v1/admin/categories/recommend",
+        data={"use_case": use_case, "max_categories": max_categories},
+        timeout=120,
+    )
+    print(json.dumps(response, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -620,6 +638,13 @@ def build_parser() -> argparse.ArgumentParser:
     categorize_parser.add_argument("--page-size", type=int, choices=range(1, 51), default=25)
     categorize_parser.add_argument("--max-items", type=positive_backfill_limit, default=1000)
     categorize_parser.add_argument("--yes", action="store_true")
+
+    categories_parser = subparsers.add_parser("categories", help="Inspect or preview the project category catalog")
+    categories_commands = categories_parser.add_subparsers(dest="categories_command", required=True)
+    categories_commands.add_parser("show", help="Show the active project catalog")
+    recommend_parser = categories_commands.add_parser("recommend", help="Preview an LLM-recommended replacement")
+    recommend_parser.add_argument("use_case")
+    recommend_parser.add_argument("--max-categories", type=int, choices=range(1, 51), default=10)
     return parser
 
 
@@ -652,6 +677,10 @@ def main() -> int:
                 max_items=args.max_items,
                 assume_yes=args.yes,
             )
+        elif args.command == "categories" and args.categories_command == "show":
+            show_categories()
+        elif args.command == "categories" and args.categories_command == "recommend":
+            recommend_categories(args.use_case, args.max_categories)
         return 0
     except AdminError as exc:
         print(f"mem0-admin: {exc}", file=sys.stderr)
