@@ -32,6 +32,7 @@ STATE_ROOT = Path(os.environ.get("MEM0_ADMIN_STATE_DIR", Path.home() / ".local/s
 TEMPORARY_TYPES = {"session_state", "compact_summary"}
 RETENTION_DAYS = 90
 MAX_ACTIONS = 10
+MAX_CANDIDATE_SOURCES = 20
 WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 STOPWORDS = {
     "and", "are", "for", "from", "that", "the", "this", "use", "was", "were", "with",
@@ -60,7 +61,9 @@ def http_json(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.load(response)
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            raise AdminError(f"{method} {path} returned non-object JSON")
+        return payload
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
         raise AdminError(f"{method} {path} failed ({exc.code}): {detail}") from exc
@@ -124,17 +127,28 @@ def iter_memories(app_id: Optional[str] = None, page_size: int = 200) -> Iterato
             "/v1/memories",
             params={"user_id": USER_ID, "app_id": app_id, "page_size": page_size, "cursor": cursor, "show_expired": True},
         )
-        for item in response.get("results", []):
-            memory_id = str(item.get("id") or "")
-            if memory_id and memory_id not in seen_ids:
+        results = response.get("results")
+        next_cursor = response.get("next_cursor")
+        has_more = response.get("has_more")
+        if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
+            raise AdminError("invalid memory page: results must be a list of objects")
+        if any(item.get("id") is None or str(item["id"]) == "" for item in results):
+            raise AdminError("invalid memory page: every result needs an id")
+        if not isinstance(has_more, bool) or has_more != bool(next_cursor):
+            raise AdminError("invalid memory page: has_more and next_cursor disagree")
+        if has_more and (not isinstance(next_cursor, str) or not next_cursor.strip() or not results):
+            raise AdminError("invalid memory page: missing usable continuation")
+        for item in results:
+            memory_id = str(item["id"])
+            if memory_id not in seen_ids:
                 seen_ids.add(memory_id)
                 yield item
-        cursor = response.get("next_cursor")
-        if not cursor:
+        if not has_more:
             return
-        if cursor in seen_cursors:
+        if next_cursor in seen_cursors:
             raise AdminError("pagination cursor repeated; refusing an incomplete scan")
-        seen_cursors.add(cursor)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
 
 def analyze(memories: list[dict[str, Any]]) -> dict[str, Any]:
@@ -214,42 +228,77 @@ def candidate_report(memories: list[dict[str, Any]], app_id: Optional[str], max_
         scope = tuple(str(item_field(item, key) or "") for key in ("user_id", "app_id", "agent_id", "run_id"))
         scoped[scope].append(item)
 
-    candidates = []
-    for scope, items in scoped.items():
-        report = analyze(items)
+    exact_rows = []
+    related_rows = []
+    exact_count = 0
+    related_count = 0
+    for scope in sorted(scoped):
+        items = sorted(scoped[scope], key=lambda item: str(item["id"]))
         scope_fields = dict(zip(("user_id", "app_id", "agent_id", "run_id"), scope))
-        for group in report["duplicate_groups"]:
-            candidates.append({
+        by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        exact: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for item in items:
+            kind = memory_type(item)
+            by_type[kind].append(item)
+            normalized = normalize_text(str(item.get("memory") or ""))
+            if normalized:
+                exact[(kind, normalized)].append(item)
+
+        for group in exact.values():
+            if len(group) < 2:
+                continue
+            exact_count += 1
+            if len(exact_rows) >= max_candidates:
+                continue
+            shown_sources = group[:MAX_CANDIDATE_SOURCES]
+            exact_rows.append({
                 "kind": "exact_duplicate",
                 "scope": scope_fields,
-                "source_memory_ids": sorted(str(item["id"]) for item in group),
-                "source_previews": {str(item["id"]): preview(item) for item in group},
+                "source_memory_count": len(group),
+                "source_memory_ids": [str(item["id"]) for item in shown_sources],
+                "source_previews": {str(item["id"]): preview(item) for item in shown_sources},
+                "omitted_source_count": len(group) - len(shown_sources),
                 "evidence": {"normalized_text_equal": True},
             })
-        for pair in report["near_duplicates"]:
-            left, right = pair["left"], pair["right"]
-            candidates.append({
-                "kind": "related_pair_review",
-                "scope": scope_fields,
-                "source_memory_ids": sorted((str(left["id"]), str(right["id"]))),
-                "source_previews": {str(item["id"]): preview(item) for item in (left, right)},
-                "evidence": {"lexical_overlap": pair["overlap"]},
-            })
+        for group in by_type.values():
+            prepared = [
+                (item, normalize_text(str(item.get("memory") or "")), significant_words(str(item.get("memory") or "")))
+                for item in group
+            ]
+            for index, (left, left_text, left_words) in enumerate(prepared):
+                if len(left_words) < 3:
+                    continue
+                for right, right_text, right_words in prepared[index + 1:]:
+                    if len(right_words) < 3 or left_text == right_text:
+                        continue
+                    overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
+                    if overlap < 0.6:
+                        continue
+                    related_count += 1
+                    if len(related_rows) >= max_candidates:
+                        continue
+                    related_rows.append({
+                        "kind": "related_pair_review",
+                        "scope": scope_fields,
+                        "source_memory_count": 2,
+                        "source_memory_ids": [str(left["id"]), str(right["id"])],
+                        "source_previews": {str(item["id"]): preview(item) for item in (left, right)},
+                        "omitted_source_count": 0,
+                        "evidence": {"lexical_overlap": round(overlap, 3)},
+                    })
 
-    candidates.sort(key=lambda row: (row["kind"], tuple(row["source_memory_ids"])))
+    candidates = exact_rows[:max_candidates] + related_rows[:max(0, max_candidates - len(exact_rows))]
+    total_candidates = exact_count + related_count
     return {
         "schema_version": 1,
         "mode": "read_only_candidates",
         "user_id": USER_ID,
         "app_id": app_id,
         "scanned": len(memories),
-        "candidate_counts": {
-            kind: sum(row["kind"] == kind for row in candidates)
-            for kind in ("exact_duplicate", "related_pair_review")
-        },
-        "shown": min(len(candidates), max_candidates),
-        "omitted": max(0, len(candidates) - max_candidates),
-        "candidates": candidates[:max_candidates],
+        "candidate_counts": {"exact_duplicate": exact_count, "related_pair_review": related_count},
+        "shown": len(candidates),
+        "omitted": total_candidates - len(candidates),
+        "candidates": candidates,
         "interpretation": "Related pairs need human labels: duplicate, contradiction, related, or unrelated.",
     }
 

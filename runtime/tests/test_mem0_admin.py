@@ -154,8 +154,8 @@ class Mem0AdminTest(unittest.TestCase):
 
     def test_iter_memories_follows_cursors_and_deduplicates_ids(self):
         responses = [
-            {"results": [item("1", "one"), item("2", "two")], "next_cursor": "cursor-2"},
-            {"results": [item("2", "two"), item("3", "three")], "next_cursor": None},
+            {"results": [item("1", "one"), item("2", "two")], "next_cursor": "cursor-2", "has_more": True},
+            {"results": [item("2", "two"), item("3", "three")], "next_cursor": None, "has_more": False},
         ]
         with mock.patch.object(mem0_admin, "http_json", side_effect=responses) as request:
             results = list(mem0_admin.iter_memories("project"))
@@ -163,6 +163,65 @@ class Mem0AdminTest(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in results], ["1", "2", "3"])
         self.assertEqual(request.call_count, 2)
         self.assertTrue(all(call.kwargs["params"]["show_expired"] for call in request.call_args_list))
+
+    def test_dream_candidates_rejects_incomplete_pages_without_printing_a_report(self):
+        pages = [
+            {"results": [item("one", "one")], "has_more": True, "next_cursor": None},
+            {"results": "not-a-list", "has_more": False, "next_cursor": None},
+            {"results": [], "has_more": False, "next_cursor": "unexpected"},
+            {"results": [{"memory": "missing id"}], "has_more": False, "next_cursor": None},
+            {"results": [item("one", "one")], "has_more": True, "next_cursor": "repeat"},
+        ]
+        for page in pages[:4]:
+            with self.subTest(page=page), mock.patch.object(mem0_admin, "http_json", return_value=page):
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(mem0_admin.AdminError):
+                    mem0_admin.print_candidates(None, 10)
+                self.assertEqual(output.getvalue(), "")
+
+        with mock.patch.object(mem0_admin, "http_json", return_value=pages[4]):
+            with self.assertRaisesRegex(mem0_admin.AdminError, "cursor repeated"):
+                list(mem0_admin.iter_memories())
+
+        with mock.patch.object(
+            mem0_admin,
+            "http_json",
+            return_value={
+                "results": [{"id": 0, "memory": "valid numeric id"}],
+                "has_more": False,
+                "next_cursor": None,
+            },
+        ):
+            self.assertEqual([record["id"] for record in mem0_admin.iter_memories()], [0])
+
+    def test_non_object_http_json_is_not_treated_as_an_empty_scope(self):
+        with mock.patch.object(mem0_admin.urllib.request, "urlopen") as open_url:
+            open_url.return_value.__enter__.return_value = io.StringIO("[]")
+            with self.assertRaisesRegex(mem0_admin.AdminError, "non-object JSON"):
+                mem0_admin.http_json("GET", "/v1/memories")
+
+    def test_large_exact_group_bounds_source_details_and_pair_rows(self):
+        memories = [
+            {**item(str(index), "Use SQLite for storage"), "user_id": mem0_admin.USER_ID} for index in range(1000)
+        ]
+
+        report = mem0_admin.candidate_report(memories, None, 1)
+
+        self.assertEqual(report["candidate_counts"], {"exact_duplicate": 1, "related_pair_review": 0})
+        self.assertEqual(report["shown"], 1)
+        self.assertEqual(report["candidates"][0]["source_memory_count"], 1000)
+        self.assertEqual(len(report["candidates"][0]["source_memory_ids"]), mem0_admin.MAX_CANDIDATE_SOURCES)
+        self.assertEqual(report["candidates"][0]["omitted_source_count"], 980)
+        self.assertLess(len(json.dumps(report)), 5000)
+
+        related = [
+            {**item(str(index), f"User prefers morning meetings option{index}"), "user_id": mem0_admin.USER_ID}
+            for index in range(30)
+        ]
+        dense = mem0_admin.candidate_report(related, None, 1)
+        self.assertEqual(dense["candidate_counts"], {"exact_duplicate": 0, "related_pair_review": 435})
+        self.assertEqual(dense["shown"], 1)
+        self.assertEqual(dense["omitted"], 434)
 
     def test_apply_backs_up_before_any_guarded_delete(self):
         with tempfile.TemporaryDirectory() as temporary:

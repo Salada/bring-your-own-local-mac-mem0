@@ -1,9 +1,8 @@
 # Dream memory maintenance
 
 `dream` is a Mem0 administration command, not a general reference to sleep. The
-name comes from Mem0's
-[`mem0-dream` workflow](https://github.com/mem0ai/mem0/blob/main/integrations/mem0-plugin/.opencode-plugin/opencode-skills/mem0-dream/SKILL.md),
-which treats memory maintenance as a consolidation pass over accumulated memory.
+name follows [Mem0 Platform Dream](https://docs.mem0.ai/platform/features/dream),
+which consolidates accumulated memory over time.
 
 The local implementation deliberately has a narrower safety boundary than the
 upstream workflow. It can plan deletion of exact duplicates and expired temporary
@@ -25,7 +24,9 @@ mem0-admin dream --auto --app-id PROJECT
   performs no backup, calls no LLM, and never applies an action. It includes
   source memory IDs and short previews for exact-duplicate groups and related
   pairs. Use `--max-candidates` to bound reported details; total candidate
-  counts still describe the scanned scope.
+  counts still describe the scanned scope. A large exact group shows at most
+  20 source IDs/previews and reports the omitted source count. The scan still
+  computes all candidate counts and may take quadratic CPU time on dense scopes.
 - `--apply` revalidates the exact plan, creates and verifies a backup, and applies
   at most ten eligible actions.
 - `--auto` combines deterministic plan generation with an interactive approval
@@ -51,7 +52,9 @@ comparison. `related_pair_review` means lexical overlap only: a pair might be
 a duplicate, contradiction, merely related, or unrelated. The report does not
 classify contradictions or suggest a replacement memory. Its previews can be
 insufficient to judge a pair; use the source IDs for a private, authorized
-review. Do not commit the JSON or memory text to this public repository.
+review. Detection is whitespace-token based; Korean sentences with spaces can
+be found, but unsegmented Chinese or Japanese sentences may be missed. Do not
+commit the JSON or memory text to this public repository.
 
 For a consented, scoped evaluation, label each reported pair as duplicate,
 contradiction, related, or unrelated. Record the number reviewed, confirmed
