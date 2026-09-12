@@ -23,6 +23,7 @@ dev = [
 
 [tool.uv]
 package = false
+exclude-newer = "7 days"
 exclude-newer-package = { mem0ai = "2026-09-03T00:00:00Z" }
 
 [tool.pytest.ini_options]
