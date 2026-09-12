@@ -2,6 +2,8 @@
 
 - This GitHub repository is the source of truth for the portable local Mem0 runtime
   and its Codex administration skill.
+- `docs/platform-gap-plan.md` is the sole living plan for Platform-to-local
+  capability decisions; update affected IDs in implementation PRs.
 - Put executable behavior, REST or MCP endpoints, database operations, backups,
   maintenance commands, and tests under `runtime/`.
 - Put Codex instructions and invocation metadata under
