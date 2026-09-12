@@ -21,8 +21,13 @@ These are maintainer proposals, not authorization for memory mutation. In partic
 
 | ID | Gap and proposed next step | Completion gate | Evidence |
 | --- | --- | --- | --- |
-| M02 | OSS already supports memory `expiration_date` and `show_expired`; local list responses show expiration metadata, but REST/MCP lacks expiration mutation arguments and `show_expired` query controls. Pass through validated arguments. | Round-trip add/update/search/list tests: search and list/get-all exclude expired records by default, include them only with explicit `show_expired`, and retain direct ID recovery. Cover the direct-Qdrant paginated list path; no automatic backfill. | [Platform expiration](https://docs.mem0.ai/platform/features/memory-expiration), [local listing](../runtime/memory_listing.py), [local server](../runtime/server.py) |
 | M01a | Local `mem0-admin dream` plans exact duplicate and expired-summary cleanup, not fuzzy merge, contradiction resolution, or synthesis. Add **read-only** candidate reporting with source memory IDs first. | Evaluate candidate precision and actual duplicate/contradiction frequency before proposing any new apply path. | [Platform Dream](https://docs.mem0.ai/platform/features/dream), [local Dream](dream.md) |
+
+## Done
+
+| ID | Result | Verification | Change |
+| --- | --- | --- | --- |
+| M02 | REST/MCP add/update expose `expiration_date`; search/list/get-all expose `show_expired`. OpenMemory and direct-Qdrant pagination hide expired records by default, while direct ID lookup and admin review retain access. No automatic backfill. | 2026-09-13: 119 runtime tests and 13 subtests passed; Ruff passed. Live deployment not tested. | [PR #26](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/26) |
 
 ## Long term
 
