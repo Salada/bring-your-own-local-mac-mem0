@@ -65,6 +65,12 @@ For Gemini on Vertex AI, this runtime additionally accepts `base_url` and a
 string-to-string `http_headers` mapping under `llm.config`. See the tested
 construction example in [`llm-providers.md`](llm-providers.md).
 
+The upstream Mem0 `reranker` block is optional and absent from both committed
+profiles. Add it only to the private config after installing the `rerank` extra;
+REST and MCP searches still require per-request `rerank=true`. See the
+[runtime setup](../runtime/README.md#4-create-local-configuration) and
+[ADR 0004](decisions/0004-opt-in-reranker.md).
+
 `custom_categories` accepts the Mem0 Platform-compatible format: a list of
 one-key objects mapping a category name to its description. Per-request
 `custom_categories` replace this project-level list. If both are omitted, the
