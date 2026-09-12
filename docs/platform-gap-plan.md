@@ -27,7 +27,7 @@ These are maintainer proposals, not authorization for memory mutation. In partic
 
 | ID | Result | Verification | Change |
 | --- | --- | --- | --- |
-| M02 | REST/MCP add/update expose `expiration_date`; search/list/get-all expose `show_expired`. OpenMemory and direct-Qdrant pagination hide expired records by default, while direct ID lookup and admin review retain access. No automatic backfill. | 2026-09-13: 119 runtime tests and 13 subtests passed; Ruff passed. Live deployment not tested. | [PR #26](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/26) |
+| M02 | REST/MCP add/update expose `expiration_date`; search/list/get-all expose `show_expired`. OpenMemory and direct-Qdrant pagination hide expired records by default, while direct ID lookup and admin review retain access. Updates require hash, revision, and scope expectations. No automatic backfill. | 2026-09-13: runtime contract and in-memory Qdrant cursor tests passed; Ruff passed. Full Mem0 persistence and live deployment not tested. | [PR #26](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/26) |
 
 ## Long term
 

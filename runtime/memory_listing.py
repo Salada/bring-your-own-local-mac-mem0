@@ -72,7 +72,7 @@ def _visible_page(store: Any, query_filter: Any, page_size: int, offset: Any) ->
         points, next_offset = store.client.scroll(
             collection_name=store.collection_name,
             scroll_filter=query_filter,
-            limit=page_size,
+            limit=page_size - len(visible),
             offset=offset,
             with_payload=True,
             with_vectors=False,
@@ -80,14 +80,36 @@ def _visible_page(store: Any, query_filter: Any, page_size: int, offset: Any) ->
         for point in points:
             if _is_expired(point):
                 continue
+            if len(visible) == page_size:
+                return visible, point.id
             visible.append(point)
-        if len(visible) >= page_size:
-            return visible, next_offset
+        if len(visible) == page_size:
+            return visible, _next_visible_cursor(store, query_filter, next_offset)
         if next_offset is None:
             return visible, None
         if next_offset == offset:
             raise ValueError("Qdrant pagination cursor did not advance")
-        offset = next_offset
+        offset = _coerce_cursor(str(next_offset)) if next_offset is not None else None
+
+
+def _next_visible_cursor(store: Any, query_filter: Any, offset: Any) -> Any:
+    """Look ahead so has_more means another visible record, not a raw point."""
+    while offset is not None:
+        points, next_offset = store.client.scroll(
+            collection_name=store.collection_name,
+            scroll_filter=query_filter,
+            limit=500,
+            offset=offset,
+            with_payload=["expiration_date"],
+            with_vectors=False,
+        )
+        for point in points:
+            if not _is_expired(point):
+                return point.id
+        if next_offset == offset:
+            raise ValueError("Qdrant pagination cursor did not advance")
+        offset = _coerce_cursor(str(next_offset)) if next_offset is not None else None
+    return None
 
 
 def list_memory_page(
@@ -131,7 +153,7 @@ def list_memory_page(
         if next_offset is None and index < page - 1:
             points = []
             break
-        offset = next_offset
+        offset = _coerce_cursor(str(next_offset)) if next_offset is not None else None
 
     return {
         "results": [_format_point(point) for point in points],
@@ -161,7 +183,7 @@ def count_memories(memory: Any, filters: Optional[dict[str, Any]], *, show_expir
             scroll_filter=query_filter,
             limit=500,
             offset=offset,
-            with_payload=True,
+            with_payload=["expiration_date"],
             with_vectors=False,
         )
         total += sum(not _is_expired(point) for point in points)

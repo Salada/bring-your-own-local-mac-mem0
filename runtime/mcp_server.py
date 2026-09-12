@@ -46,7 +46,7 @@ MCP_INSTRUCTIONS = (
     "preferences, conventions, failures, and environment facts before acting. After significant work, call "
     "add_memory only for durable decisions, preferences, conventions, reusable fixes, and outcomes not already "
     "captured; use concise text and metadata.type. Never store secrets, credentials, transient logs, or raw tool "
-    "output. Confirm IDs before updates. Before calling delete_memory, show the exact memory to the user and obtain "
+    "output. Before updates, get the memory and pass its hash, revision, and user scope. Before calling delete_memory, show the exact memory to the user and obtain "
     "approval. The server then requires the reviewed hash/revision/scope and a verified backup. Bulk deletion is "
     "intentionally unavailable over MCP."
 )
@@ -338,6 +338,10 @@ def create_mcp_server(
     @mcp.tool()
     def update_memory(
         memory_id: str,
+        expected_hash: str,
+        expected_revision: str,
+        expected_user_id: str = DEFAULT_USER_ID,
+        expected_app_id: Optional[str] = None,
         text: Optional[str] = None,
         metadata: Optional[dict] = None,
         expiration_date: Optional[str] = None,
@@ -350,12 +354,19 @@ def create_mcp_server(
         try:
             if expiration_date is not None and clear_expiration_date:
                 raise ValueError("expiration_date and clear_expiration_date cannot be combined")
-            if text is None and metadata is None and expiration_date is None and not clear_expiration_date:
+            if text is None and not metadata and expiration_date is None and not clear_expiration_date:
                 raise ValueError("text, metadata, or expiration_date is required")
             kwargs: dict[str, Any] = {"text": text, "metadata": metadata}
             if expiration_date is not None or clear_expiration_date:
                 kwargs["expiration_date"] = None if clear_expiration_date else expiration_date
             with mutation_lock():
+                validate_current(
+                    memory.get(memory_id),
+                    expected_hash=expected_hash,
+                    expected_revision=expected_revision,
+                    expected_user_id=expected_user_id,
+                    expected_app_id=expected_app_id,
+                )
                 res = memory.update(memory_id, **kwargs)
             return json.dumps({"result": "Memory updated.", "memory_id": memory_id, "details": res}, ensure_ascii=False)
         except Exception as e:

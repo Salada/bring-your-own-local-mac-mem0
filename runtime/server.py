@@ -207,6 +207,10 @@ class SearchMemoryRequest(BaseModel):
 
 
 class UpdateMemoryRequest(BaseModel):
+    expected_hash: str = Field(min_length=1)
+    expected_revision: str = Field(min_length=1)
+    expected_user_id: str = Field(min_length=1)
+    expected_app_id: Optional[str] = None
     text: Optional[str] = None
     data: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -449,12 +453,22 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
     """Update an existing memory item by ID."""
     try:
         new_text = req.text or req.data
-        if not new_text and req.metadata is None and "expiration_date" not in req.model_fields_set:
+        if not new_text and not req.metadata and "expiration_date" not in req.model_fields_set:
             raise HTTPException(status_code=400, detail="Missing 'text', 'data', 'metadata', or 'expiration_date'")
         kwargs: dict[str, Any] = {"text": new_text, "metadata": req.metadata}
         if "expiration_date" in req.model_fields_set:
             kwargs["expiration_date"] = req.expiration_date
         with mutation_lock():
+            try:
+                validate_current(
+                    memory.get(memory_id),
+                    expected_hash=req.expected_hash,
+                    expected_revision=req.expected_revision,
+                    expected_user_id=req.expected_user_id,
+                    expected_app_id=req.expected_app_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             res = memory.update(memory_id, **kwargs)
         return {"result": "Memory updated.", "memory_id": memory_id, "details": res}
     except Exception as e:
@@ -496,7 +510,9 @@ def openmemory_filter_memories(req: OpenMemoryFilterRequest):
     if req.search_query:
         filters["data"] = {"icontains": req.search_query}
     try:
-        result = list_memory_page(memory, filters=filters, page_size=req.size, page=req.page, show_expired=req.show_expired)
+        result = list_memory_page(
+            memory, filters=filters, page_size=req.size, page=req.page, show_expired=req.show_expired
+        )
         items = [to_openmemory_item(item) for item in result["results"]]
         total = count_memories(memory, filters, show_expired=req.show_expired)
         return {
@@ -556,6 +572,7 @@ def backfill_categories(req: CategoryBackfillRequest):
             filters={"user_id": req.user_id} if req.user_id else None,
             page_size=req.page_size,
             cursor=req.cursor,
+            show_expired=True,
         )
         candidates = [
             item for item in page["results"] if req.overwrite or not (item.get("metadata") or {}).get("categories")
@@ -637,14 +654,10 @@ def openmemory_apps():
 @app.get("/stats")
 @app.get("/api/v1/stats")
 @app.get("/api/v1/stats/")
-def get_stats():
+def get_stats(show_expired: bool = False):
     """Return memory statistics for dashboard counters."""
     try:
-        if hasattr(memory.vector_store, "client") and hasattr(memory.vector_store.client, "get_collection"):
-            coll = memory.vector_store.client.get_collection(memory.collection_name)
-            return {"total_memories": coll.points_count, "total_apps": 0, "apps": []}
-        points, _ = memory.vector_store.list(filters=None, top_k=10000)
-        return {"total_memories": len(points), "total_apps": 0, "apps": []}
+        return {"total_memories": count_memories(memory, None, show_expired=show_expired), "total_apps": 0, "apps": []}
     except Exception:
         return {"total_memories": 0, "total_apps": 0, "apps": []}
 
