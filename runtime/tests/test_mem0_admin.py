@@ -77,6 +77,7 @@ class Mem0AdminTest(unittest.TestCase):
 
         self.assertEqual([entry["id"] for entry in results], ["1", "2", "3"])
         self.assertEqual(request.call_count, 2)
+        self.assertTrue(all(call.kwargs["params"]["show_expired"] for call in request.call_args_list))
 
     def test_apply_backs_up_before_any_guarded_delete(self):
         with tempfile.TemporaryDirectory() as temporary:

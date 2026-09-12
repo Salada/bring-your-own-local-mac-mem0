@@ -15,6 +15,15 @@ from memory_listing import count_memories, list_memory_page, to_openmemory_item
 
 
 class NormalizeFiltersTest(unittest.TestCase):
+    def test_pinned_oss_rejects_invalid_expiration_before_mutation(self):
+        from mem0 import Memory
+
+        uninitialized = Memory.__new__(Memory)
+        with self.assertRaisesRegex(ValueError, "expiration_date must be a valid date"):
+            uninitialized.add("temporary", user_id="u", expiration_date="not-a-date")
+        with self.assertRaisesRegex(ValueError, "expiration_date must be a valid date"):
+            uninitialized.update("one", expiration_date="2026-02-30")
+
     def test_promotes_scope_and_preserves_metadata_filters(self):
         filters = {
             "AND": [
@@ -177,6 +186,124 @@ class NormalizeFiltersTest(unittest.TestCase):
         self.assertRegex(worker.kwargs["observation_time"], r"\+00:00$")
         self.assertTrue(worker.kwargs["classify_categories"])
 
+    def test_expiration_add_update_clear_and_search_pass_through(self):
+        class MemoryStub:
+            def get(self, _memory_id):
+                return {
+                    "id": "one",
+                    "hash": "hash-one",
+                    "updated_at": "2026-09-13T00:00:00+00:00",
+                    "user_id": DEFAULT_USER_ID,
+                }
+
+            def add(self, *_args, **kwargs):
+                self.add_kwargs = kwargs
+                return {"results": []}
+
+            def update(self, _memory_id, **kwargs):
+                self.update_kwargs = kwargs
+                return {"message": "ok"}
+
+            def search(self, **kwargs):
+                self.search_kwargs = kwargs
+                return {"results": []}
+
+        class CategorizerStub:
+            def catalog(self, _categories):
+                return []
+
+        class WorkerStub:
+            def submit(self, *_args, **_kwargs):
+                pass
+
+        memory = MemoryStub()
+        mcp = create_mcp_server(memory, categorizer=CategorizerStub(), category_worker=WorkerStub())
+        preconditions = {
+            "memory_id": "one",
+            "expected_hash": "hash-one",
+            "expected_revision": "2026-09-13T00:00:00+00:00",
+        }
+        asyncio.run(mcp.call_tool("add_memory", {"text": "temporary", "expiration_date": "2026-09-14"}))
+        self.assertEqual(memory.add_kwargs["expiration_date"], "2026-09-14")
+
+        asyncio.run(mcp.call_tool("update_memory", {**preconditions, "expiration_date": "2026-09-15"}))
+        self.assertEqual(memory.update_kwargs["expiration_date"], "2026-09-15")
+
+        asyncio.run(mcp.call_tool("update_memory", {**preconditions, "clear_expiration_date": True}))
+        self.assertIsNone(memory.update_kwargs["expiration_date"])
+
+        memory.update_kwargs = None
+        _, rejected = asyncio.run(
+            mcp.call_tool("update_memory", {**preconditions, "expected_hash": "stale", "expiration_date": "2026-09-16"})
+        )
+        self.assertEqual(json.loads(rejected["result"]), {"error": "memory changed after review"})
+        self.assertIsNone(memory.update_kwargs)
+
+        _, empty = asyncio.run(mcp.call_tool("update_memory", {**preconditions, "metadata": {}}))
+        self.assertIn("required", json.loads(empty["result"])["error"])
+        self.assertIsNone(memory.update_kwargs)
+
+        asyncio.run(mcp.call_tool("search_memories", {"query": "temporary", "show_expired": True}))
+        self.assertTrue(memory.search_kwargs["show_expired"])
+
+    def test_mcp_list_aliases_hide_expired_unless_requested(self):
+        points = [
+            SimpleNamespace(id=1, payload={"data": "old", "expiration_date": "2000-01-01"}),
+            SimpleNamespace(id=2, payload={"data": "current"}),
+        ]
+        memory = SimpleNamespace(
+            vector_store=SimpleNamespace(
+                collection_name="mem0",
+                _create_filter=lambda filters: filters,
+                client=SimpleNamespace(scroll=lambda **_kwargs: (points, None)),
+            )
+        )
+        mcp = create_mcp_server(memory)
+
+        for name in ("get_memories", "get_all_memories", "get_all"):
+            with self.subTest(tool=name):
+                _, hidden = asyncio.run(mcp.call_tool(name, {}))
+                _, shown = asyncio.run(mcp.call_tool(name, {"show_expired": True}))
+                self.assertEqual([item["id"] for item in json.loads(hidden["result"])["results"]], ["2"])
+                self.assertEqual([item["id"] for item in json.loads(shown["result"])["results"]], ["1", "2"])
+
+    def test_mcp_invalid_dates_are_rejected_by_pinned_oss(self):
+        from mem0 import Memory
+
+        uninitialized = Memory.__new__(Memory)
+
+        class Validator:
+            def add(self, *args, **kwargs):
+                return uninitialized.add(*args, **kwargs)
+
+            def get(self, _memory_id):
+                return {
+                    "id": "one",
+                    "hash": "hash-one",
+                    "updated_at": "2026-09-13T00:00:00+00:00",
+                    "user_id": DEFAULT_USER_ID,
+                }
+
+            def update(self, memory_id, **kwargs):
+                return uninitialized.update(memory_id, **kwargs)
+
+        mcp = create_mcp_server(Validator())
+        _, added = asyncio.run(mcp.call_tool("add_memory", {"text": "bad", "expiration_date": "not-a-date"}))
+        _, updated = asyncio.run(
+            mcp.call_tool(
+                "update_memory",
+                {
+                    "memory_id": "one",
+                    "expected_hash": "hash-one",
+                    "expected_revision": "2026-09-13T00:00:00+00:00",
+                    "expiration_date": "2026-02-30",
+                },
+            )
+        )
+
+        self.assertIn("expiration_date must be a valid date", json.loads(added["result"])["error"])
+        self.assertIn("expiration_date must be a valid date", json.loads(updated["result"])["error"])
+
     def test_only_guarded_single_delete_is_exposed_over_mcp(self):
         mcp = create_mcp_server(object())
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
@@ -337,7 +464,7 @@ class MemoryPaginationTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in result["results"]], ["2"])
         self.assertEqual(result["next_cursor"], "3")
         self.assertTrue(result["has_more"])
-        self.assertEqual(client.offsets, [2])
+        self.assertEqual(client.offsets, [2, 3])
 
     def test_numeric_page_is_a_compatibility_walk(self):
         memory, client = self.make_memory()
@@ -346,7 +473,7 @@ class MemoryPaginationTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in result["results"]], ["3"])
         self.assertIsNone(result["next_cursor"])
         self.assertFalse(result["has_more"])
-        self.assertEqual(client.offsets, [None, 2, 3])
+        self.assertEqual(client.offsets, [None, 2, 2, 3, 3])
 
     def test_rejects_ambiguous_cursor_and_page(self):
         memory, _ = self.make_memory()
@@ -358,7 +485,7 @@ class MemoryPaginationTest(unittest.TestCase):
         result = list_memory_page(memory, filters=None, page_size=1, page=4)
 
         self.assertEqual(result["results"], [])
-        self.assertEqual(client.offsets, [None, 2, 3])
+        self.assertEqual(client.offsets, [None, 2, 2, 3, 3])
 
     def test_nested_metadata_is_flattened(self):
         memory, _ = self.make_memory()
@@ -377,6 +504,7 @@ class MemoryPaginationTest(unittest.TestCase):
             "memory": "one",
             "created_at": "2026-09-10T00:00:00Z",
             "agent_id": "codex",
+            "expiration_date": "2999-01-01",
             "metadata": {"categories": ["work"]},
         }
 
@@ -386,7 +514,7 @@ class MemoryPaginationTest(unittest.TestCase):
         self.assertEqual(result["state"], "active")
         self.assertEqual(result["categories"], ["work"])
         self.assertEqual(result["app_name"], "codex")
-        self.assertEqual(result["metadata_"], {"categories": ["work"]})
+        self.assertEqual(result["metadata_"], {"categories": ["work"], "expiration_date": "2999-01-01"})
 
     def test_count_uses_same_qdrant_filter(self):
         memory, client = self.make_memory()
@@ -398,11 +526,144 @@ class MemoryPaginationTest(unittest.TestCase):
 
         client.count = count
 
-        result = count_memories(memory, {"user_id": "u"})
+        result = count_memories(memory, {"user_id": "u"}, show_expired=True)
 
         self.assertEqual(result, 23)
         self.assertEqual(client.count_calls[0]["count_filter"], ("filter", {"user_id": "u"}))
         self.assertTrue(client.count_calls[0]["exact"])
+
+    def test_expired_points_do_not_leave_holes_in_cursor_pages(self):
+        expired = "2000-01-01"
+        pages = {
+            None: ([SimpleNamespace(id="1", payload={"data": "expired", "expiration_date": expired})], 2),
+            2: ([SimpleNamespace(id="2", payload={"data": "visible", "expiration_date": "2999-01-01"})], 3),
+            3: ([SimpleNamespace(id="3", payload={"data": "also visible"})], None),
+        }
+        offsets = []
+
+        def scroll(**kwargs):
+            offsets.append(kwargs["offset"])
+            return pages[kwargs["offset"]]
+
+        store = SimpleNamespace(
+            client=SimpleNamespace(scroll=scroll), collection_name="mem0", _create_filter=lambda value: value
+        )
+        memory = SimpleNamespace(vector_store=store)
+        first = list_memory_page(memory, filters={"user_id": "u"}, page_size=1)
+        second = list_memory_page(memory, filters={"user_id": "u"}, page_size=1, cursor=first["next_cursor"])
+
+        self.assertEqual([item["id"] for item in first["results"]], ["2"])
+        self.assertEqual([item["id"] for item in second["results"]], ["3"])
+        self.assertEqual(offsets, [None, 2, 3, 3])
+        self.assertEqual(count_memories(memory, {"user_id": "u"}), 2)
+        self.assertEqual(
+            [item["id"] for item in list_memory_page(memory, filters=None, page_size=1, show_expired=True)["results"]],
+            ["1"],
+        )
+        self.assertEqual(
+            [item["id"] for item in list_memory_page(memory, filters=None, page_size=1, page=2)["results"]],
+            ["3"],
+        )
+
+    def test_expiration_uses_inclusive_utc_date_and_fails_open(self):
+        from datetime import datetime, timezone
+
+        points = [
+            SimpleNamespace(id="past", payload={"expiration_date": "2026-09-12"}),
+            SimpleNamespace(id="today", payload={"expiration_date": "2026-09-13"}),
+            SimpleNamespace(id="future", payload={"expiration_date": "2026-09-14"}),
+            SimpleNamespace(id="invalid", payload={"expiration_date": "bad-date"}),
+        ]
+        store = SimpleNamespace(
+            client=SimpleNamespace(scroll=lambda **_kwargs: (points, None)),
+            collection_name="mem0",
+            _create_filter=lambda value: value,
+        )
+        memory = SimpleNamespace(vector_store=store)
+        with mock.patch("memory_listing.datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 13, tzinfo=timezone.utc)
+            self.assertEqual(
+                [item["id"] for item in list_memory_page(memory, filters=None, page_size=4)["results"]],
+                ["today", "future", "invalid"],
+            )
+
+    def test_filtered_pages_respect_size_and_only_advertise_visible_successors(self):
+        points = [
+            SimpleNamespace(id=index, payload={"expiration_date": "2000-01-01"} if expired else {"data": str(index)})
+            for index, expired in enumerate([True, False, True, False, False, False, True])
+        ]
+
+        def scroll(**kwargs):
+            start = kwargs["offset"] or 0
+            end = min(start + kwargs["limit"], len(points))
+            return points[start:end], end if end < len(points) else None
+
+        memory = SimpleNamespace(
+            vector_store=SimpleNamespace(
+                collection_name="mem0", client=SimpleNamespace(scroll=scroll), _create_filter=lambda value: value
+            )
+        )
+        first = list_memory_page(memory, filters=None, page_size=3)
+        second = list_memory_page(memory, filters=None, page_size=3, cursor=first["next_cursor"])
+
+        self.assertEqual([item["id"] for item in first["results"]], ["1", "3", "4"])
+        self.assertEqual(first["next_cursor"], "5")
+        self.assertTrue(first["has_more"])
+        self.assertEqual([item["id"] for item in second["results"]], ["5"])
+        self.assertIsNone(second["next_cursor"])
+        self.assertFalse(second["has_more"])
+        self.assertEqual(count_memories(memory, None), 4)
+
+        # A full page followed only by expired raw points must not promise a page.
+        tail = SimpleNamespace(
+            vector_store=SimpleNamespace(
+                collection_name="mem0",
+                client=SimpleNamespace(
+                    scroll=lambda **kwargs: (points[3:4], 6) if kwargs["offset"] is None else (points[6:], None)
+                ),
+                _create_filter=lambda value: value,
+            )
+        )
+        last = list_memory_page(tail, filters=None, page_size=1)
+        self.assertEqual([item["id"] for item in last["results"]], ["3"])
+        self.assertFalse(last["has_more"])
+
+    def test_cursor_lookahead_works_with_real_qdrant_scroll_offsets(self):
+        from qdrant_client import QdrantClient, models
+
+        client = QdrantClient(":memory:")
+        client.create_collection("mem0", vectors_config=models.VectorParams(size=1, distance=models.Distance.COSINE))
+        client.upsert(
+            "mem0",
+            points=[
+                models.PointStruct(id=1, vector=[0.1], payload={"data": "one"}),
+                models.PointStruct(id=2, vector=[0.1], payload={"data": "expired", "expiration_date": "2000-01-01"}),
+                models.PointStruct(id=3, vector=[0.1], payload={"data": "three"}),
+            ],
+        )
+        memory = SimpleNamespace(vector_store=SimpleNamespace(client=client, collection_name="mem0"))
+        first = list_memory_page(memory, filters=None, page_size=1)
+        second = list_memory_page(memory, filters=None, page_size=1, cursor=first["next_cursor"])
+
+        self.assertEqual([item["id"] for item in first["results"]], ["1"])
+        self.assertEqual(first["next_cursor"], "3")
+        self.assertEqual([item["id"] for item in second["results"]], ["3"])
+        self.assertFalse(second["has_more"])
+
+    def test_expiration_is_visible_on_direct_id_lookup(self):
+        record = {"id": "one", "expiration_date": "2000-01-01"}
+
+        class MemoryStub:
+            def get(self, memory_id):
+                self.memory_id = memory_id
+                return record
+
+        memory = MemoryStub()
+        mcp = create_mcp_server(memory)
+        _, result = asyncio.run(mcp.call_tool("get_memory", {"memory_id": "one"}))
+
+        self.assertEqual(json.loads(result["result"]), record)
+        self.assertEqual(memory.memory_id, "one")
 
 
 class MemoryGuardTest(unittest.TestCase):

@@ -211,12 +211,15 @@ class TemporalReasoner:
         threshold: Optional[float] = None,
         rerank: Optional[bool] = None,
         explain: bool = False,
+        show_expired: bool = False,
     ) -> Any:
         baseline_kwargs: dict[str, Any] = {
             "query": query,
             "filters": filters,
             "top_k": top_k,
         }
+        if show_expired:
+            baseline_kwargs["show_expired"] = True
         if threshold is not None:
             baseline_kwargs["threshold"] = threshold
         if rerank is not None:
