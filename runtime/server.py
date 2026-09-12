@@ -174,6 +174,7 @@ class AddMemoryRequest(BaseModel):
     infer: bool = True
     custom_categories: Optional[list[dict[str, str]]] = None
     timestamp: Optional[datetime] = None
+    expiration_date: Optional[str] = None
 
 
 class CategoryBackfillRequest(BaseModel):
@@ -202,12 +203,14 @@ class SearchMemoryRequest(BaseModel):
     reference_date: Optional[datetime] = None
     threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     explain: bool = Field(default=False, description="Include details when temporal reranking runs")
+    show_expired: bool = False
 
 
 class UpdateMemoryRequest(BaseModel):
     text: Optional[str] = None
     data: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    expiration_date: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
@@ -225,6 +228,7 @@ class OpenMemoryFilterRequest(BaseModel):
     sort_column: Optional[str] = None
     sort_direction: Optional[str] = None
     show_archived: bool = False
+    show_expired: bool = False
 
 
 def openmemory_user_id(user_id: Optional[str]) -> str:
@@ -274,6 +278,7 @@ def add_memory(req: AddMemoryRequest):
                 run_id=req.run_id,
                 metadata=metadata or None,
                 infer=req.infer,
+                expiration_date=req.expiration_date,
                 prompt=(
                     temporal_add_prompt(observation_time, getattr(memory, "custom_instructions", None))
                     if observation_time
@@ -320,6 +325,7 @@ def search_memory(req: SearchMemoryRequest):
             reference_date=req.reference_date,
             threshold=req.threshold,
             explain=req.explain,
+            show_expired=req.show_expired,
         )
         if isinstance(res, dict) and "results" in res:
             return res
@@ -344,6 +350,7 @@ def get_all_memories(
     page_size: Optional[int] = Query(default=None, ge=1, le=500),
     page: int = Query(default=1, ge=1),
     cursor: Optional[str] = None,
+    show_expired: bool = False,
 ):
     """
     Retrieve stored memories.
@@ -374,6 +381,7 @@ def get_all_memories(
             page_size=max_items,
             page=page,
             cursor=cursor,
+            show_expired=show_expired,
         )
     except Exception as e:
         raise_api_error("Getting all memories", e)
@@ -441,10 +449,13 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
     """Update an existing memory item by ID."""
     try:
         new_text = req.text or req.data
-        if not new_text:
-            raise HTTPException(status_code=400, detail="Missing 'text' or 'data'")
+        if not new_text and req.metadata is None and "expiration_date" not in req.model_fields_set:
+            raise HTTPException(status_code=400, detail="Missing 'text', 'data', 'metadata', or 'expiration_date'")
+        kwargs: dict[str, Any] = {"text": new_text, "metadata": req.metadata}
+        if "expiration_date" in req.model_fields_set:
+            kwargs["expiration_date"] = req.expiration_date
         with mutation_lock():
-            res = memory.update(memory_id, text=new_text, metadata=req.metadata)
+            res = memory.update(memory_id, **kwargs)
         return {"result": "Memory updated.", "memory_id": memory_id, "details": res}
     except Exception as e:
         raise_api_error("Updating memory", e)
@@ -485,9 +496,9 @@ def openmemory_filter_memories(req: OpenMemoryFilterRequest):
     if req.search_query:
         filters["data"] = {"icontains": req.search_query}
     try:
-        result = list_memory_page(memory, filters=filters, page_size=req.size, page=req.page)
+        result = list_memory_page(memory, filters=filters, page_size=req.size, page=req.page, show_expired=req.show_expired)
         items = [to_openmemory_item(item) for item in result["results"]]
-        total = count_memories(memory, filters)
+        total = count_memories(memory, filters, show_expired=req.show_expired)
         return {
             "items": items,
             "total": total,

@@ -305,6 +305,17 @@ Both templates contain `__HOME__` placeholders and bind services to loopback.
 
 ## Commands
 
+Memory expiration is available on REST and MCP add/update calls as
+`expiration_date="YYYY-MM-DD"`. A REST update with `"expiration_date": null`
+clears it; MCP uses `clear_expiration_date=true`. Search, paginated lists, and
+OpenMemory's list hide records after their expiration date by default; pass
+`show_expired=true` to include them. The date remains visible through direct ID
+lookup, and the administration audit scans both active and expired records.
+Expiration uses the UTC calendar date and never deletes data. The OpenMemory UI
+has no expiry toggle, so use REST/MCP for recovery. Its total count scans the
+filtered Qdrant scope when expiration is hidden; this may be slower on large
+collections. Existing memories are not backfilled.
+
 Add `runtime/bin` to `PATH`, or copy its commands to a personal bin directory:
 
 ```text

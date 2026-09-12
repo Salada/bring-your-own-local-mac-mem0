@@ -165,6 +165,7 @@ def create_mcp_server(
         threshold: float = 0.5,
         reference_date: Optional[str] = None,
         explain: bool = False,
+        show_expired: bool = False,
     ) -> str:
         """Semantic search across stored memories with filters.
 
@@ -184,6 +185,7 @@ def create_mcp_server(
                 rerank=rerank,
                 reference_date=reference_date,
                 explain=explain,
+                show_expired=show_expired,
             )
             items = res.get("results", []) if isinstance(res, dict) else res if isinstance(res, list) else []
             filtered = []
@@ -213,6 +215,7 @@ def create_mcp_server(
         page_size: Optional[int] = None,
         page: int = 1,
         cursor: Optional[str] = None,
+        show_expired: bool = False,
     ) -> str:
         """List stored memories with filters and pagination.
 
@@ -227,6 +230,7 @@ def create_mcp_server(
                 page_size=max_items,
                 page=page,
                 cursor=cursor,
+                show_expired=show_expired,
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
@@ -234,14 +238,14 @@ def create_mcp_server(
             return json.dumps({"error": str(e), "results": []}, ensure_ascii=False)
 
     @mcp.tool()
-    def get_all_memories(user_id: str = DEFAULT_USER_ID, limit: int = 100) -> str:
+    def get_all_memories(user_id: str = DEFAULT_USER_ID, limit: int = 100, show_expired: bool = False) -> str:
         """Retrieve all stored memories for the specified user (alias for get_memories)."""
-        return get_memories(user_id=user_id, limit=limit)
+        return get_memories(user_id=user_id, limit=limit, show_expired=show_expired)
 
     @mcp.tool()
-    def get_all(user_id: str = DEFAULT_USER_ID, limit: int = 100) -> str:
+    def get_all(user_id: str = DEFAULT_USER_ID, limit: int = 100, show_expired: bool = False) -> str:
         """Retrieve all stored memories for the specified user (legacy alias)."""
-        return get_memories(user_id=user_id, limit=limit)
+        return get_memories(user_id=user_id, limit=limit, show_expired=show_expired)
 
     @mcp.tool()
     def get_memory(memory_id: str) -> str:
@@ -266,6 +270,7 @@ def create_mcp_server(
         infer: bool = True,
         custom_categories: Optional[list[dict[str, str]]] = None,
         timestamp: Optional[str] = None,
+        expiration_date: Optional[str] = None,
     ) -> str:
         """Save text, conversation history, or facts into Mem0 memory.
 
@@ -287,6 +292,7 @@ def create_mcp_server(
                     agent_id=agent_id,
                     metadata=meta or None,
                     infer=infer,
+                    expiration_date=expiration_date,
                     prompt=(
                         temporal_add_prompt(observation_time, getattr(memory, "custom_instructions", None))
                         if observation_time
@@ -314,6 +320,7 @@ def create_mcp_server(
         infer: bool = True,
         custom_categories: Optional[list[dict[str, str]]] = None,
         timestamp: Optional[str] = None,
+        expiration_date: Optional[str] = None,
     ) -> str:
         """Save knowledge or facts into Mem0 (alias for add_memory)."""
         return add_memory(
@@ -325,6 +332,7 @@ def create_mcp_server(
             infer=infer,
             custom_categories=custom_categories,
             timestamp=timestamp,
+            expiration_date=expiration_date,
         )
 
     @mcp.tool()
@@ -332,14 +340,23 @@ def create_mcp_server(
         memory_id: str,
         text: Optional[str] = None,
         metadata: Optional[dict] = None,
+        expiration_date: Optional[str] = None,
+        clear_expiration_date: bool = False,
     ) -> str:
         """Update or overwrite an existing memory item by ID.
 
         Compatible with official Mem0 MCP update_memory.
         """
         try:
+            if expiration_date is not None and clear_expiration_date:
+                raise ValueError("expiration_date and clear_expiration_date cannot be combined")
+            if text is None and metadata is None and expiration_date is None and not clear_expiration_date:
+                raise ValueError("text, metadata, or expiration_date is required")
+            kwargs: dict[str, Any] = {"text": text, "metadata": metadata}
+            if expiration_date is not None or clear_expiration_date:
+                kwargs["expiration_date"] = None if clear_expiration_date else expiration_date
             with mutation_lock():
-                res = memory.update(memory_id, text=text, metadata=metadata)
+                res = memory.update(memory_id, **kwargs)
             return json.dumps({"result": "Memory updated.", "memory_id": memory_id, "details": res}, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in update_memory: %s", e)

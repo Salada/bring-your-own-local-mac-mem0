@@ -179,6 +179,17 @@ class TemporalRerankTest(unittest.TestCase):
 
 
 class TemporalReasonerTest(unittest.TestCase):
+    def test_show_expired_is_forwarded_to_mem0(self):
+        class MemoryStub:
+            def search(self, **kwargs):
+                self.kwargs = kwargs
+                return {"results": []}
+
+        memory = MemoryStub()
+        TemporalReasoner(memory).search(query="Which database?", filters={"user_id": "u"}, top_k=2, show_expired=True)
+
+        self.assertTrue(memory.kwargs["show_expired"])
+
     def test_non_temporal_query_without_options_preserves_original_call_shape(self):
         class MemoryStub:
             def search(self, **kwargs):

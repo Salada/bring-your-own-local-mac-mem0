@@ -119,7 +119,7 @@ def iter_memories(app_id: Optional[str] = None, page_size: int = 200) -> Iterato
         response = http_json(
             "GET",
             "/v1/memories",
-            params={"user_id": USER_ID, "app_id": app_id, "page_size": page_size, "cursor": cursor},
+            params={"user_id": USER_ID, "app_id": app_id, "page_size": page_size, "cursor": cursor, "show_expired": True},
         )
         for item in response.get("results", []):
             memory_id = str(item.get("id") or "")
