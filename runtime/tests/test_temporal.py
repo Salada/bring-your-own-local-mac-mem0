@@ -113,6 +113,36 @@ class TemporalRerankTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in result], ["undated", "future-plan"])
         self.assertEqual([item["score"] for item in result], [0.7, 0.68])
 
+    def test_opt_in_neural_rank_preserves_vector_score_and_temporal_boost(self):
+        items = [
+            {"id": "vector-first", "score": 0.9, "rerank_score": 0.2},
+            {
+                "id": "neural-first",
+                "score": 0.6,
+                "rerank_score": 0.8,
+                "event_start": "2026-09-03T09:00:00+09:00",
+                "event_end": "2026-09-03T10:00:00+09:00",
+                "temporal_kind": "occurrence",
+            },
+        ]
+
+        result = rerank_temporal_results(items, self.interval, limit=2, threshold=0.5, use_rerank_score=True)
+
+        self.assertEqual([item["id"] for item in result], ["neural-first", "vector-first"])
+        self.assertEqual(result[0]["score"], 0.6 + TEMPORAL_BOOST)
+        self.assertEqual(result[0]["rerank_score"], 0.8)
+
+    def test_opt_in_normalizes_raw_model_logit_for_temporal_combination(self):
+        items = [
+            {"id": "raw-logit", "score": 0.6, "rerank_score": 2.0},
+            {"id": "bounded-score", "score": 0.7, "rerank_score": 0.8},
+        ]
+
+        result = rerank_temporal_results(items, self.interval, limit=2, threshold=0.5, use_rerank_score=True)
+
+        self.assertEqual([item["id"] for item in result], ["raw-logit", "bounded-score"])
+        self.assertEqual(result[0]["rerank_score"], 2.0)
+
 
 class TemporalReasonerTest(unittest.TestCase):
     def test_non_temporal_query_without_options_preserves_original_call_shape(self):
@@ -156,6 +186,23 @@ class TemporalReasonerTest(unittest.TestCase):
                 "rerank": True,
             },
         )
+
+    def test_opt_in_reranker_overfetches_then_returns_requested_count(self):
+        class MemoryStub:
+            reranker = object()
+
+            def search(self, **kwargs):
+                self.kwargs = kwargs
+                return {"results": [{"id": str(index)} for index in range(kwargs["top_k"])]}
+
+        memory = MemoryStub()
+        result = TemporalReasoner(memory).search(
+            query="Which database did we choose?", filters={"user_id": "u"}, top_k=3, rerank=True
+        )
+
+        self.assertEqual(memory.kwargs["top_k"], 6)
+        self.assertTrue(memory.kwargs["rerank"])
+        self.assertEqual([item["id"] for item in result["results"]], ["0", "1", "2"])
 
     def test_reference_date_requires_timezone_even_for_non_temporal_query(self):
         memory = SimpleNamespace(search=lambda **_kwargs: {"results": []})

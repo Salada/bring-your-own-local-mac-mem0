@@ -197,6 +197,7 @@ class SearchMemoryRequest(BaseModel):
     run_id: Optional[str] = None
     limit: Optional[int] = 10
     top_k: Optional[int] = None
+    rerank: bool = False
     filters: Optional[Dict[str, Any]] = None
     reference_date: Optional[datetime] = None
     threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
@@ -315,6 +316,7 @@ def search_memory(req: SearchMemoryRequest):
             query=req.query,
             filters=filters,
             top_k=max_items,
+            rerank=req.rerank,
             reference_date=req.reference_date,
             threshold=req.threshold,
             explain=req.explain,

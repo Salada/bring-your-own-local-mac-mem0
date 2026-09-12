@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +14,8 @@ logger = logging.getLogger("mem0-server.temporal")
 
 TEMPORAL_BOOST = 0.15
 OVERFETCH_FACTOR = 3
+RERANK_OVERFETCH_FACTOR = 2
+RERANK_CANDIDATE_CAP = 60
 TEMPORAL_KINDS = {"occurrence", "plan"}
 TEMPORAL_INTENTS = TEMPORAL_KINDS | {"any"}
 _TEMPORAL_CUE = re.compile(
@@ -117,6 +120,7 @@ def rerank_temporal_results(
     limit: int,
     threshold: float,
     explain: bool = False,
+    use_rerank_score: bool = False,
 ) -> list[dict[str, Any]]:
     """Boost date-and-intent matches after the semantic threshold gate."""
     query_start = aware_datetime(query_interval.start, "start")
@@ -140,6 +144,18 @@ def rerank_temporal_results(
         boost = TEMPORAL_BOOST if temporal_match else 0.0
         final_score = min(1.0, base_score + boost)
         item["score"] = final_score
+        rank_score = base_score
+        if use_rerank_score and item.get("rerank_score") is not None:
+            try:
+                model_score = float(item["rerank_score"])
+                if math.isfinite(model_score):
+                    rank_score = (
+                        model_score
+                        if 0.0 <= model_score <= 1.0
+                        else 1.0 / (1.0 + math.exp(-max(-50.0, min(50.0, model_score))))
+                    )
+            except (TypeError, ValueError):
+                pass
         if explain:
             item["temporal_explanation"] = {
                 "base_score": base_score,
@@ -147,7 +163,7 @@ def rerank_temporal_results(
                 "boost": boost,
                 "final_score": final_score,
             }
-        ranked.append((final_score, -index, item))
+        ranked.append((min(1.0, rank_score + boost), -index, item))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
     return [item for _, _, item in ranked[:limit]]
 
@@ -201,10 +217,24 @@ class TemporalReasoner:
             baseline_kwargs["threshold"] = threshold
         if rerank is not None:
             baseline_kwargs["rerank"] = rerank
+        candidate_k = (
+            max(top_k, min(top_k * RERANK_OVERFETCH_FACTOR, RERANK_CANDIDATE_CAP))
+            if rerank and getattr(self.memory, "reranker", None)
+            else top_k
+        )
+
+        def baseline_search() -> Any:
+            result = self.memory.search(**{**baseline_kwargs, "top_k": candidate_k})
+            if candidate_k == top_k:
+                return result
+            if isinstance(result, dict) and isinstance(result.get("results"), list):
+                return {**result, "results": result["results"][:top_k]}
+            return result[:top_k] if isinstance(result, list) else result
+
         if not has_temporal_cue(query):
             if reference_date is not None:
                 iso_timestamp(reference_date, "reference_date")
-            return self.memory.search(**baseline_kwargs)
+            return baseline_search()
         reference = iso_timestamp(
             reference_date if reference_date is not None else datetime.now(timezone.utc),
             "reference_date",
@@ -214,7 +244,7 @@ class TemporalReasoner:
             interval = self.parse_query(query, reference)
         except Exception as exc:
             logger.warning("Temporal query parsing failed; using semantic search: %s", exc)
-            return self.memory.search(**baseline_kwargs)
+            return baseline_search()
 
         temporal_threshold = 0.5 if threshold is None else threshold
         result = self.memory.search(
@@ -231,5 +261,6 @@ class TemporalReasoner:
             limit=top_k,
             threshold=temporal_threshold,
             explain=explain,
+            use_rerank_score=bool(rerank),
         )
         return {**result, "results": reranked} if isinstance(result, dict) else {"results": reranked}
