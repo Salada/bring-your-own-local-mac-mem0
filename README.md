@@ -29,6 +29,7 @@ The repository is intentionally split into two paths:
 | Install the full local Codex lifecycle plugin | [`plugins/mem0-local/README.md`](plugins/mem0-local/README.md) |
 | Restore one exact backup generation | [`docs/restore.md`](docs/restore.md) |
 | Optionally install the Codex administration skill | [`skills/mem0-local-admin/README.md`](skills/mem0-local-admin/README.md) |
+| Review planned Platform-to-local capabilities | [`docs/platform-gap-plan.md`](docs/platform-gap-plan.md) |
 
 ## Safety defaults
 
