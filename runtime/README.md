@@ -117,8 +117,8 @@ footprint-oriented option because it uses smaller vectors and a smaller model;
 measure local latency and retrieval quality before drawing stronger conclusions.
 
 Both choices fill the dense-embedding role; neither replaces Mem0's NLP path.
-This runtime installs `mem0ai[nlp]`, so the pinned Mem0 release uses spaCy's
-English model for entity extraction and keyword lemmatization. With Qdrant, actual
+This runtime pins both `mem0ai[nlp]` and spaCy's `en_core_web_sm` model so an
+exact `uv sync` preserves entity extraction and keyword lemmatization. With Qdrant, actual
 BM25 scoring additionally requires `fastembed`, which this minimal dependency set
 does not install. The default path therefore retains entity extraction and
 cross-lingual dense retrieval but does not claim full BM25 hybrid search. Selecting
