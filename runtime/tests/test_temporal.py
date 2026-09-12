@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from temporal import (
     TEMPORAL_BOOST,
@@ -134,14 +135,47 @@ class TemporalRerankTest(unittest.TestCase):
 
     def test_opt_in_normalizes_raw_model_logit_for_temporal_combination(self):
         items = [
-            {"id": "raw-logit", "score": 0.6, "rerank_score": 2.0},
-            {"id": "bounded-score", "score": 0.7, "rerank_score": 0.8},
+            {"id": "lower-logit", "score": 0.6, "rerank_score": 1.0},
+            {"id": "higher-logit", "score": 0.7, "rerank_score": 1.01},
         ]
 
-        result = rerank_temporal_results(items, self.interval, limit=2, threshold=0.5, use_rerank_score=True)
+        result = rerank_temporal_results(
+            items, self.interval, limit=2, threshold=0.5, use_rerank_score=True, rerank_scores_normalized=False
+        )
 
-        self.assertEqual([item["id"] for item in result], ["raw-logit", "bounded-score"])
-        self.assertEqual(result[0]["rerank_score"], 2.0)
+        self.assertEqual([item["id"] for item in result], ["higher-logit", "lower-logit"])
+        self.assertEqual(result[0]["rerank_score"], 1.01)
+
+    def test_official_huggingface_zero_score_fallback_uses_vector_temporal_order(self):
+        from mem0.configs.base import MemoryConfig
+        from mem0.configs.rerankers.huggingface import HuggingFaceRerankerConfig
+        from mem0.reranker.huggingface_reranker import HuggingFaceReranker
+
+        configured = MemoryConfig.model_validate(
+            {"reranker": {"provider": "huggingface", "config": {"model": "BAAI/bge-reranker-v2-m3"}}}
+        )
+        self.assertEqual(configured.reranker.provider, "huggingface")
+        reranker = HuggingFaceReranker.__new__(HuggingFaceReranker)
+        reranker.config = HuggingFaceRerankerConfig()
+        reranker.tokenizer = Mock(side_effect=RuntimeError("synthetic scoring failure"))
+        reranker.device = "cpu"
+        items = [
+            {"id": "vector-first", "memory": "vector-first", "score": 0.9},
+            {
+                "id": "dated-second",
+                "memory": "dated-second",
+                "score": 0.6,
+                "event_start": "2026-09-03T09:00:00+09:00",
+                "event_end": "2026-09-03T10:00:00+09:00",
+                "temporal_kind": "occurrence",
+            },
+        ]
+
+        fallback = reranker.rerank("When did we meet?", items, top_k=2)
+        self.assertEqual([item["rerank_score"] for item in fallback], [0.0, 0.0])
+        result = rerank_temporal_results(fallback, self.interval, limit=2, threshold=0.5, use_rerank_score=True)
+
+        self.assertEqual([item["id"] for item in result], ["vector-first", "dated-second"])
 
 
 class TemporalReasonerTest(unittest.TestCase):

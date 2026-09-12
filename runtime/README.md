@@ -198,10 +198,13 @@ private Mem0 Platform ranking algorithm. See
 [`docs/temporal-reasoning.md`](../docs/temporal-reasoning.md) for behavior and
 limits.
 
-Neural reranking is separately opt-in. Install the optional dependencies with
-`uv sync --extra rerank`, then check device availability:
+Neural reranking is separately opt-in and, with the currently locked Torch
+wheel, requires macOS 14 or newer on Apple Silicon. Check the OS before installing
+the optional dependencies, then check device availability:
 
 ```bash
+test "$(sw_vers -productVersion | cut -d. -f1)" -ge 14
+uv sync --extra rerank
 uv run --extra rerank python -c 'import torch; print(torch.backends.mps.is_available())'
 ```
 
@@ -228,9 +231,11 @@ to MCP `search_memories` for individual searches. Both default to false, and
 without a configured provider the flag remains a no-op. The local model loads
 when Mem0 starts; its weights may need a first-run download, and a model load
 failure can prevent startup. This is a search-time ranking change, not an
-embedding migration or backfill. Mem0 retains the
-vector `score` and adds `rerank_score`; temporal queries still apply their
-bounded date boost. See [ADR 0004](../docs/decisions/0004-opt-in-reranker.md).
+embedding migration or backfill. Mem0 adds `rerank_score` for neural ordering;
+the `score` on temporal results remains the locally boosted vector score (the
+raw vector score is shown in `explain=true` output). Temporal queries still
+apply their bounded date boost. See
+[ADR 0004](../docs/decisions/0004-opt-in-reranker.md).
 
 Inspect the active catalog or ask the configured LLM for a replacement preview.
 Recommendation sends only the supplied use-case text and does not persist its

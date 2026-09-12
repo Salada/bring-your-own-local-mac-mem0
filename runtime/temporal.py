@@ -121,10 +121,14 @@ def rerank_temporal_results(
     threshold: float,
     explain: bool = False,
     use_rerank_score: bool = False,
+    rerank_scores_normalized: bool = True,
 ) -> list[dict[str, Any]]:
     """Boost date-and-intent matches after the semantic threshold gate."""
     query_start = aware_datetime(query_interval.start, "start")
     query_end = aware_datetime(query_interval.end, "end")
+    # Mem0's Hugging Face fallback marks every original result with 0.0.
+    if use_rerank_score and items and all(item.get("rerank_score") == 0.0 for item in items):
+        use_rerank_score = False
     ranked: list[tuple[float, int, dict[str, Any]]] = []
     for index, original in enumerate(items):
         item = dict(original)
@@ -151,7 +155,7 @@ def rerank_temporal_results(
                 if math.isfinite(model_score):
                     rank_score = (
                         model_score
-                        if 0.0 <= model_score <= 1.0
+                        if rerank_scores_normalized
                         else 1.0 / (1.0 + math.exp(-max(-50.0, min(50.0, model_score))))
                     )
             except (TypeError, ValueError):
@@ -217,9 +221,10 @@ class TemporalReasoner:
             baseline_kwargs["threshold"] = threshold
         if rerank is not None:
             baseline_kwargs["rerank"] = rerank
+        configured_reranker = getattr(self.memory, "reranker", None)
         candidate_k = (
             max(top_k, min(top_k * RERANK_OVERFETCH_FACTOR, RERANK_CANDIDATE_CAP))
-            if rerank and getattr(self.memory, "reranker", None)
+            if rerank and configured_reranker
             else top_k
         )
 
@@ -262,5 +267,8 @@ class TemporalReasoner:
             threshold=temporal_threshold,
             explain=explain,
             use_rerank_score=bool(rerank),
+            rerank_scores_normalized=getattr(getattr(configured_reranker, "config", None), "normalize", True)
+            if rerank and configured_reranker
+            else True,
         )
         return {**result, "results": reranked} if isinstance(result, dict) else {"results": reranked}

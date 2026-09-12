@@ -30,12 +30,21 @@ Recommend multilingual `BAAI/bge-reranker-v2-m3` on `mps` only when PyTorch
 reports MPS available; otherwise use CPU. Do not download weights or activate
 it during deployment.
 
+The locked Torch wheel currently makes this extra macOS 14+ only on Apple
+Silicon; the base runtime is not subject to that extra's minimum OS version.
+
 For non-temporal opted-in searches with a configured reranker, retrieve at most
 twice the requested `top_k` (expansion capped at 60 candidates), ask upstream Mem0 to
 rerank that set, then return the requested count. For temporal searches, retain
 the existing three-times candidate pool and semantic threshold. Rank eligible
-results by Mem0's `rerank_score` plus the bounded temporal boost, while retaining
-the existing vector-derived `score` field and temporal explanation semantics.
+results by Mem0's `rerank_score` plus the bounded temporal boost, while keeping
+the existing locally boosted vector-derived `score` and temporal explanation
+semantics. When the provider is configured with `normalize=false`, sigmoid is
+applied uniformly to its raw logits for temporal combination, preserving
+their order. When the official Hugging Face provider returns zero scores for
+all candidates after a scoring failure, temporal ranking falls back to the
+vector-plus-date order.
+
 If no provider is configured, the opt-in flag is an upstream no-op. Upstream
 reranker failures fall back to vector results.
 
