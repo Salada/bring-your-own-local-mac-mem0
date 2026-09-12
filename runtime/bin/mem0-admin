@@ -108,7 +108,10 @@ def normalize_text(text: str) -> str:
 
 
 def significant_words(text: str) -> set[str]:
-    return {word for word in WORD_RE.findall(text.casefold()) if len(word) >= 3 and word not in STOPWORDS}
+    return {
+        word for word in WORD_RE.findall(text.casefold())
+        if (len(word) >= 3 or (len(word) >= 2 and not word.isascii())) and word not in STOPWORDS
+    }
 
 
 def iter_memories(app_id: Optional[str] = None, page_size: int = 200) -> Iterator[dict[str, Any]]:
@@ -202,6 +205,58 @@ def print_review(report: dict[str, Any]) -> None:
     for pair in report["near_duplicates"][:10]:
         print(f"  [near {pair['overlap']:.2f}] {pair['left']['id']} <> {pair['right']['id']}")
     print("  contradictions: manual review required; no automatic inference")
+
+
+def candidate_report(memories: list[dict[str, Any]], app_id: Optional[str], max_candidates: int) -> dict[str, Any]:
+    """Report review leads only; never classify or apply Dream mutations."""
+    scoped: dict[tuple[Any, Any, Any, Any], list[dict[str, Any]]] = defaultdict(list)
+    for item in memories:
+        scope = tuple(str(item_field(item, key) or "") for key in ("user_id", "app_id", "agent_id", "run_id"))
+        scoped[scope].append(item)
+
+    candidates = []
+    for scope, items in scoped.items():
+        report = analyze(items)
+        scope_fields = dict(zip(("user_id", "app_id", "agent_id", "run_id"), scope))
+        for group in report["duplicate_groups"]:
+            candidates.append({
+                "kind": "exact_duplicate",
+                "scope": scope_fields,
+                "source_memory_ids": sorted(str(item["id"]) for item in group),
+                "source_previews": {str(item["id"]): preview(item) for item in group},
+                "evidence": {"normalized_text_equal": True},
+            })
+        for pair in report["near_duplicates"]:
+            left, right = pair["left"], pair["right"]
+            candidates.append({
+                "kind": "related_pair_review",
+                "scope": scope_fields,
+                "source_memory_ids": sorted((str(left["id"]), str(right["id"]))),
+                "source_previews": {str(item["id"]): preview(item) for item in (left, right)},
+                "evidence": {"lexical_overlap": pair["overlap"]},
+            })
+
+    candidates.sort(key=lambda row: (row["kind"], tuple(row["source_memory_ids"])))
+    return {
+        "schema_version": 1,
+        "mode": "read_only_candidates",
+        "user_id": USER_ID,
+        "app_id": app_id,
+        "scanned": len(memories),
+        "candidate_counts": {
+            kind: sum(row["kind"] == kind for row in candidates)
+            for kind in ("exact_duplicate", "related_pair_review")
+        },
+        "shown": min(len(candidates), max_candidates),
+        "omitted": max(0, len(candidates) - max_candidates),
+        "candidates": candidates[:max_candidates],
+        "interpretation": "Related pairs need human labels: duplicate, contradiction, related, or unrelated.",
+    }
+
+
+def print_candidates(app_id: Optional[str], max_candidates: int) -> None:
+    report = candidate_report(list(iter_memories(app_id)), app_id, max_candidates)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def search(query: str, kind: Optional[str], app_id: Optional[str]) -> list[dict[str, Any]]:
@@ -624,10 +679,12 @@ def build_parser() -> argparse.ArgumentParser:
     dream_parser = subparsers.add_parser("dream", help="Plan or apply bounded deterministic cleanup")
     mode = dream_parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--candidates", action="store_true", help="Print read-only review candidates as JSON")
     mode.add_argument("--apply", type=Path, metavar="PLAN")
     mode.add_argument("--auto", action="store_true")
     dream_parser.add_argument("--app-id")
     dream_parser.add_argument("--max-actions", type=positive_max_actions, default=MAX_ACTIONS)
+    dream_parser.add_argument("--max-candidates", type=positive_backfill_limit, default=100)
     dream_parser.add_argument("--yes", action="store_true")
 
     categorize_parser = subparsers.add_parser("categorize", help="Preview or apply category backfill")
@@ -663,6 +720,10 @@ def main() -> int:
             forget(args.query, args.id, args.app_id, args.yes)
         elif args.command == "dream" and args.dry_run:
             create_plan(args.app_id, args.max_actions)
+        elif args.command == "dream" and args.candidates:
+            if args.yes:
+                raise AdminError("--candidates is read-only and does not accept --yes")
+            print_candidates(args.app_id, args.max_candidates)
         elif args.command == "dream" and args.apply:
             apply_plan(args.apply, args.yes)
         elif args.command == "dream" and args.auto:
