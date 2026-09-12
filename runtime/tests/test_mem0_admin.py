@@ -1,9 +1,11 @@
 import importlib.machinery
 import importlib.util
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +29,89 @@ def item(memory_id, text, kind="decision", created="2026-09-01T00:00:00+00:00", 
 
 
 class Mem0AdminTest(unittest.TestCase):
+    def test_dream_candidate_report_keeps_source_ids_and_scope(self):
+        memories = [
+            {
+                **item("a", "Use SQLite for storage"),
+                "user_id": mem0_admin.USER_ID,
+                "metadata": {"type": "decision", "app_id": "one"},
+            },
+            {
+                **item("b", "use sqlite for storage"),
+                "user_id": mem0_admin.USER_ID,
+                "metadata": {"type": "decision", "app_id": "one"},
+            },
+            {
+                **item("c", "User currently lives in Seoul"),
+                "user_id": mem0_admin.USER_ID,
+                "metadata": {"type": "decision", "app_id": "one"},
+            },
+            {
+                **item("d", "User currently lives in Busan"),
+                "user_id": mem0_admin.USER_ID,
+                "metadata": {"type": "decision", "app_id": "one"},
+            },
+            {
+                **item("other", "Use SQLite for storage"),
+                "user_id": mem0_admin.USER_ID,
+                "metadata": {"type": "decision", "app_id": "two"},
+            },
+        ]
+
+        report = mem0_admin.candidate_report(memories, None, 100)
+
+        self.assertEqual(report["mode"], "read_only_candidates")
+        self.assertEqual(report["scanned"], 5)
+        self.assertEqual(report["candidate_counts"], {"exact_duplicate": 1, "related_pair_review": 1})
+        self.assertEqual(
+            {(row["kind"], tuple(row["source_memory_ids"])) for row in report["candidates"]},
+            {("exact_duplicate", ("a", "b")), ("related_pair_review", ("c", "d"))},
+        )
+        self.assertTrue(all(row["scope"]["app_id"] == "one" for row in report["candidates"]))
+        self.assertEqual(mem0_admin.candidate_report(memories, None, 1)["omitted"], 1)
+
+    def test_dream_candidate_report_can_surface_korean_related_pairs(self):
+        memories = [
+            {**item("seoul", "사용자는 지금 서울에 살고 있다"), "user_id": mem0_admin.USER_ID},
+            {**item("busan", "사용자는 지금 부산에 살고 있다"), "user_id": mem0_admin.USER_ID},
+        ]
+
+        report = mem0_admin.candidate_report(memories, None, 10)
+
+        self.assertEqual(report["candidate_counts"]["related_pair_review"], 1)
+        self.assertEqual(report["candidates"][0]["source_memory_ids"], ["busan", "seoul"])
+
+    def test_dream_candidates_mode_only_prints_json_and_never_writes_a_plan(self):
+        memories = [{**item("one", "Use SQLite for storage"), "user_id": mem0_admin.USER_ID}]
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "admin-state"
+            output = io.StringIO()
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", return_value=iter(memories)) as read,
+                mock.patch.object(mem0_admin, "capture_backup") as backup,
+                mock.patch.object(mem0_admin, "guarded_delete") as delete,
+                mock.patch.object(mem0_admin, "create_plan") as plan,
+                mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--candidates", "--app-id", "one"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(mem0_admin.main(), 0)
+
+            self.assertEqual(json.loads(output.getvalue())["mode"], "read_only_candidates")
+            read.assert_called_once_with("one")
+            backup.assert_not_called()
+            delete.assert_not_called()
+            plan.assert_not_called()
+            self.assertFalse(state_root.exists())
+
+    def test_dream_candidates_rejects_yes_without_scanning(self):
+        with (
+            mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--candidates", "--yes"]),
+            mock.patch.object(mem0_admin, "iter_memories") as read,
+        ):
+            self.assertEqual(mem0_admin.main(), 1)
+        read.assert_not_called()
+
     def test_category_recommendation_is_preview_only(self):
         response = {"mode": "preview", "applied": False, "recommended_categories": [{"work": "Work facts"}]}
         with (
@@ -69,8 +154,8 @@ class Mem0AdminTest(unittest.TestCase):
 
     def test_iter_memories_follows_cursors_and_deduplicates_ids(self):
         responses = [
-            {"results": [item("1", "one"), item("2", "two")], "next_cursor": "cursor-2"},
-            {"results": [item("2", "two"), item("3", "three")], "next_cursor": None},
+            {"results": [item("1", "one"), item("2", "two")], "next_cursor": "cursor-2", "has_more": True},
+            {"results": [item("2", "two"), item("3", "three")], "next_cursor": None, "has_more": False},
         ]
         with mock.patch.object(mem0_admin, "http_json", side_effect=responses) as request:
             results = list(mem0_admin.iter_memories("project"))
@@ -78,6 +163,65 @@ class Mem0AdminTest(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in results], ["1", "2", "3"])
         self.assertEqual(request.call_count, 2)
         self.assertTrue(all(call.kwargs["params"]["show_expired"] for call in request.call_args_list))
+
+    def test_dream_candidates_rejects_incomplete_pages_without_printing_a_report(self):
+        pages = [
+            {"results": [item("one", "one")], "has_more": True, "next_cursor": None},
+            {"results": "not-a-list", "has_more": False, "next_cursor": None},
+            {"results": [], "has_more": False, "next_cursor": "unexpected"},
+            {"results": [{"memory": "missing id"}], "has_more": False, "next_cursor": None},
+            {"results": [item("one", "one")], "has_more": True, "next_cursor": "repeat"},
+        ]
+        for page in pages[:4]:
+            with self.subTest(page=page), mock.patch.object(mem0_admin, "http_json", return_value=page):
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(mem0_admin.AdminError):
+                    mem0_admin.print_candidates(None, 10)
+                self.assertEqual(output.getvalue(), "")
+
+        with mock.patch.object(mem0_admin, "http_json", return_value=pages[4]):
+            with self.assertRaisesRegex(mem0_admin.AdminError, "cursor repeated"):
+                list(mem0_admin.iter_memories())
+
+        with mock.patch.object(
+            mem0_admin,
+            "http_json",
+            return_value={
+                "results": [{"id": 0, "memory": "valid numeric id"}],
+                "has_more": False,
+                "next_cursor": None,
+            },
+        ):
+            self.assertEqual([record["id"] for record in mem0_admin.iter_memories()], [0])
+
+    def test_non_object_http_json_is_not_treated_as_an_empty_scope(self):
+        with mock.patch.object(mem0_admin.urllib.request, "urlopen") as open_url:
+            open_url.return_value.__enter__.return_value = io.StringIO("[]")
+            with self.assertRaisesRegex(mem0_admin.AdminError, "non-object JSON"):
+                mem0_admin.http_json("GET", "/v1/memories")
+
+    def test_large_exact_group_bounds_source_details_and_pair_rows(self):
+        memories = [
+            {**item(str(index), "Use SQLite for storage"), "user_id": mem0_admin.USER_ID} for index in range(1000)
+        ]
+
+        report = mem0_admin.candidate_report(memories, None, 1)
+
+        self.assertEqual(report["candidate_counts"], {"exact_duplicate": 1, "related_pair_review": 0})
+        self.assertEqual(report["shown"], 1)
+        self.assertEqual(report["candidates"][0]["source_memory_count"], 1000)
+        self.assertEqual(len(report["candidates"][0]["source_memory_ids"]), mem0_admin.MAX_CANDIDATE_SOURCES)
+        self.assertEqual(report["candidates"][0]["omitted_source_count"], 980)
+        self.assertLess(len(json.dumps(report)), 5000)
+
+        related = [
+            {**item(str(index), f"User prefers morning meetings option{index}"), "user_id": mem0_admin.USER_ID}
+            for index in range(30)
+        ]
+        dense = mem0_admin.candidate_report(related, None, 1)
+        self.assertEqual(dense["candidate_counts"], {"exact_duplicate": 0, "related_pair_review": 435})
+        self.assertEqual(dense["shown"], 1)
+        self.assertEqual(dense["omitted"], 434)
 
     def test_apply_backs_up_before_any_guarded_delete(self):
         with tempfile.TemporaryDirectory() as temporary:
