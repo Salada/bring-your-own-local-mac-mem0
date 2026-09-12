@@ -37,9 +37,9 @@ temporal fields share one post-write LLM call when both are requested.
 Sources:
 
 - [Mem0 Temporal Reasoning](https://docs.mem0.ai/platform/features/temporal-reasoning)
-- [Mem0 OSS `Memory` implementation](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/memory/main.py)
-- [Mem0 OSS extraction prompts](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/configs/prompts.py)
-- [Mem0 OSS Qdrant adapter](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/vector_stores/qdrant.py)
+- [Mem0 OSS `Memory` implementation](https://github.com/mem0ai/mem0/blob/v2.0.20/mem0/memory/main.py)
+- [Mem0 OSS extraction prompts](https://github.com/mem0ai/mem0/blob/v2.0.20/mem0/configs/prompts.py)
+- [Mem0 OSS Qdrant adapter](https://github.com/mem0ai/mem0/blob/v2.0.20/mem0/vector_stores/qdrant.py)
 
 The parser-library comparison and deferral are recorded in
 [Decision 0001](decisions/0001-temporal-parser.md).

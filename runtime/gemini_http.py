@@ -1,4 +1,4 @@
-"""Add Google Gen AI HTTP options missing from Mem0 2.0.19's Gemini adapter."""
+"""Add Google Gen AI HTTP options missing from Mem0 2.0.20's Gemini adapter."""
 
 from __future__ import annotations
 

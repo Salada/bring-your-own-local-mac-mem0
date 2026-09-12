@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Mem0 Local Unified Server",
     description="Host-Native Mem0 REST API, FastMCP SSE & Streamable HTTP, and OpenMemory UI Backend",
-    version="2.0.19",
+    version="2.0.20",
     lifespan=lifespan,
 )
 
@@ -241,7 +241,7 @@ def health():
     return {
         "status": "ok",
         "service": "mem0-server",
-        "baseline": "mem0ai==2.0.19",
+        "baseline": "mem0ai==2.0.20",
         "config": str(CONFIG_FILE),
     }
 
@@ -347,7 +347,7 @@ def get_all_memories(
     Retrieve stored memories.
 
     CRITICAL MAINTAINER NOTE:
-    In mem0ai==2.0.19, `memory.get_all()` enforces that `filters` must contain
+    In mem0ai==2.0.20, `memory.get_all()` enforces that `filters` must contain
     at least one of (user_id, agent_id, run_id). If none is provided (e.g. when
     OpenMemory UI loads the initial overview page), calling `memory.get_all()`
     would raise a ValueError.

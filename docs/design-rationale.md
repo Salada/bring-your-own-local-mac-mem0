@@ -56,10 +56,10 @@ Proper nouns deliberately retained in Korean have the same limitation. This is a
 constraint of Mem0's current hard-coded English pipeline, not of spaCy itself;
 spaCy publishes separate [Korean pipelines](https://spacy.io/models/ko/). See the
 upstream [language-boundary report](https://github.com/mem0ai/mem0/issues/4884)
-and pinned [Mem0 search implementation](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/memory/main.py).
+and pinned [Mem0 search implementation](https://github.com/mem0ai/mem0/blob/v2.0.20/mem0/memory/main.py).
 
 The baseline stops short of claiming full hybrid search. The pinned
-[Qdrant adapter](https://github.com/mem0ai/mem0/blob/v2.0.19/mem0/vector_stores/qdrant.py)
+[Qdrant adapter](https://github.com/mem0ai/mem0/blob/v2.0.20/mem0/vector_stores/qdrant.py)
 needs `fastembed` to generate BM25 sparse vectors, and this project's minimal
 dependency set does not install it. spaCy entity extraction remains useful, but
 lemmatized metadata alone does not make BM25 active. Likewise, choosing BGE-M3

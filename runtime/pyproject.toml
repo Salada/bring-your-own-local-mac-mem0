@@ -5,7 +5,7 @@ description = "Local Mem0 REST and MCP runtime for Apple Silicon macOS"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mem0ai[nlp]==2.0.19",
+    "mem0ai[nlp]==2.0.20",
     "google-genai>=2.20.0",
     "qdrant-client>=1.10.0",
     "fastapi>=0.115.0",
@@ -23,6 +23,8 @@ dev = [
 
 [tool.uv]
 package = false
+exclude-newer = "7 days"
+exclude-newer-package = { mem0ai = "2026-09-03T00:00:00Z" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
