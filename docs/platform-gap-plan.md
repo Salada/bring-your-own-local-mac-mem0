@@ -21,7 +21,7 @@ These are maintainer proposals, not authorization for memory mutation. In partic
 
 | ID | Gap and proposed next step | Completion gate | Evidence |
 | --- | --- | --- | --- |
-| M01a | Local `mem0-admin dream` plans exact duplicate and expired-summary cleanup, not fuzzy merge, contradiction resolution, or synthesis. Add **read-only** candidate reporting with source memory IDs first. | Evaluate candidate precision and actual duplicate/contradiction frequency before proposing any new apply path. | [Platform Dream](https://docs.mem0.ai/platform/features/dream), [local Dream](dream.md) |
+| M01a | [PR #27](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/27) adds **read-only** scoped candidate reporting with source memory IDs, short previews, and counts. Exact duplicates and lexically related pairs are leads, not inferred contradictions or apply actions. | Implementation is synthetic-test verified; actual candidate precision, duplicate/contradiction frequency, and misses remain **unmeasured** because no private memories were inspected. Keep this gate open before any new apply path. | [Platform Dream](https://docs.mem0.ai/platform/features/dream), [local Dream](dream.md) |
 
 ## Done
 
