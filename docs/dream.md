@@ -108,3 +108,38 @@ accuracy estimates. Before M01b, independently label a scoped sample of actual
 candidate and non-candidate memory pairs, record ambiguous cases, and measure
 whether stale facts harm retrieval. Do not export private examples to a public
 issue, PR, CI log, or external benchmark service.
+
+## Private adjudication sample
+
+Run `mem0-admin dream --eval-sample --private-output --sample-size 20 --seed
+20260913` only in a private local terminal. The explicit flag is required
+because the JSON printed to stdout includes **full memory text and IDs**. The
+command reads one user scope and writes no file, label, backup, or memory. Do
+not paste or redirect its output to a public repository, CI log, cloud service,
+or shared agent session. If a local copy is necessary for human labeling,
+protect it as private state outside the repository and delete it when no
+longer needed.
+
+The sample is uniform within four same-user/app/agent/run/type pair strata:
+normalized exact pairs, related candidates (lexical overlap at least 0.6),
+near misses (0.4–0.6), and all remaining background pairs. It records the
+population size of each stratum, the random seed, source revisions, and a
+scan fingerprint covering text, revision, scope, and type. Pair enumeration
+uses quadratic CPU time but bounded sample storage. Two independent reviewers
+should mark each pair
+`duplicate`, `contradiction`, `related`, `unrelated`, or `uncertain` before
+resolving disagreements. A contradiction requires incompatible claims about
+the same subject and time; a changed preference or sequential task stage is
+not automatically one. Do not silently discard uncertain pairs.
+
+Report **pair-level** precision separately for exact and related candidates,
+with each sample denominator and uncertainty. `candidate_report` counts exact
+duplicate **groups**, whereas this sample counts exact **pairs**; do not call
+the pooled raw sample fraction its row-level precision. Any combined pair-level
+estimate must weight the strata by their pair-population sizes and state that
+estimand. Report confirmed misses separately by sampled noncandidate stratum. A small
+background sample cannot support a reliable global recall estimate when
+positive pairs are rare. Retrieval harm needs a separate query-level review;
+pair labels alone cannot establish it. The live store may change during a
+paginated scan, so the printed sample is a scan-derived review packet, not an
+atomic or externally reproducible memory snapshot.
