@@ -415,7 +415,7 @@ def highlight_shared_words(text: str, common: set[str], color: bool) -> str:
 
 
 def review_pair_display(pair: dict[str, Any], index: int, total: int, color: bool) -> str:
-    left, right = pair["source_memories"]
+    left, right = (unicodedata.normalize("NFC", text) for text in pair["source_memories"])
     common = significant_words(left) & significant_words(right)
     heading_a = "A  첫 번째 기억"
     heading_b = "B  두 번째 기억"
@@ -432,10 +432,23 @@ def review_pair_display(pair: dict[str, Any], index: int, total: int, color: boo
 
 
 REVIEW_CHOICES = (
-    "[d] 중복: 같은 사실/주장의 반복     [c] 모순: 같은 대상·시점에서 양립 불가\n"
-    "[r] 관련: 주제는 같지만 양립 가능   [n] 무관: 관련 없음\n"
-    "[u] 불확실: 판단 보류             [q] 중단: 저장 후 나중에 재개"
+    ("d", "중복", "같은 사실/주장의 반복"),
+    ("c", "모순", "같은 대상·시점에서 양립 불가"),
+    ("r", "관련", "주제는 같지만 양립 가능"),
+    ("n", "무관", "관련 없음"),
+    ("u", "불확실", "판단 보류"),
+    ("q", "중단", "저장 후 나중에 재개"),
 )
+
+
+def review_choices_display(color: bool) -> str:
+    lines = ["판정 선택 · 한 글자 입력"]
+    for key, label, meaning in REVIEW_CHOICES:
+        marker = f"▶ [{key}] 【{label}】"
+        if color:
+            marker = f"\x1b[1;32m{marker}\x1b[0m"
+        lines.append(f"{marker} — {meaning}")
+    return "\n".join(lines)
 
 
 def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Path:
@@ -516,15 +529,15 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
                     continue
                 print(review_pair_display(pair, index, len(pairs), color))
                 while True:
-                    print(REVIEW_CHOICES)
+                    print(review_choices_display(color))
                     try:
-                        answer = input("판정 [d/c/r/n/u/q] > ").strip().lower()
+                        answer = input("판정 > ").strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         answer = "q"
                         print()
                     if answer in EVALUATION_LABELS or answer == "q":
                         break
-                    print("한 글자만 입력하세요: d, c, r, n, u, q")
+                    print("입력을 인식하지 못했습니다. 아래 선택지에서 한 글자를 골라 주세요.")
                 if answer == "q":
                     print(f"Paused at {len(labels)}/{len(pairs)}; rerun the same command to resume.")
                     return path

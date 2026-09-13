@@ -258,6 +258,23 @@ class Mem0AdminTest(unittest.TestCase):
         self.assertNotIn("\x1b", plain)
         self.assertIn("\x1b[1;4;33m⟦SQLite⟧\x1b[0m", colored)
 
+    def test_review_pair_marks_canonically_equivalent_hangul_and_accents(self):
+        pair = {
+            "stratum": "related_candidate",
+            "source_memories": ["한글 cafe\u0301", "한글 café"],
+        }
+        display = mem0_admin.review_pair_display(pair, 0, 1, color=False)
+        self.assertEqual(display.count("⟦한글⟧"), 2)
+        self.assertEqual(display.count("⟦café⟧"), 2)
+
+    def test_choice_guide_emphasizes_all_six_labels_with_and_without_color(self):
+        plain = mem0_admin.review_choices_display(False)
+        colored = mem0_admin.review_choices_display(True)
+        for key, label, meaning in mem0_admin.REVIEW_CHOICES:
+            self.assertIn(f"▶ [{key}] 【{label}】 — {meaning}", plain)
+            self.assertIn(f"\x1b[1;32m▶ [{key}] 【{label}】\x1b[0m — {meaning}", colored)
+        self.assertNotIn("\x1b", plain)
+
     def test_review_choices_repeat_after_invalid_key(self):
         memories = [
             {**item("a", "alpha beta gamma"), "user_id": mem0_admin.USER_ID},
@@ -274,8 +291,8 @@ class Mem0AdminTest(unittest.TestCase):
                 redirect_stdout(output),
             ):
                 mem0_admin.review_evaluation(None, 1, 7)
-            self.assertEqual(output.getvalue().count("[d] 중복"), 2)
-            self.assertEqual(output.getvalue().count("[q] 중단"), 2)
+            self.assertEqual(output.getvalue().count("▶ [d] 【중복】"), 2)
+            self.assertEqual(output.getvalue().count("▶ [q] 【중단】"), 2)
             self.assertIn("A  첫 번째 기억", output.getvalue())
             self.assertIn("B  두 번째 기억", output.getvalue())
             self.assertNotIn("\x1b", output.getvalue())
