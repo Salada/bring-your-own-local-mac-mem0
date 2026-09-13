@@ -21,7 +21,7 @@ These are maintainer proposals, not authorization for memory mutation. In partic
 
 | ID | Gap and proposed next step | Completion gate | Evidence |
 | --- | --- | --- | --- |
-| M01a | [PR #27](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/27) adds **read-only** scoped candidate reporting with source memory IDs, short previews, and counts. Exact duplicates and lexically related pairs are leads, not inferred contradictions or apply actions. | Implementation is synthetic-test verified; actual candidate precision, duplicate/contradiction frequency, and misses remain **unmeasured** because no private memories were inspected. Keep this gate open before any new apply path. | [Platform Dream](https://docs.mem0.ai/platform/features/dream), [local Dream](dream.md) |
+| M01a | [PR #27](https://github.com/Salada/bring-your-own-local-mac-mem0/pull/27) adds **read-only** scoped candidate reporting with source memory IDs, short previews, and counts. Exact duplicates and lexically related pairs are leads, not inferred contradictions or apply actions. A [consented private evaluation](dream.md#exploratory-evaluation-2026-09-13) and two reproducible public out-of-domain checks have now run. | Implementation is synthetic-test verified. The private pilot had one reviewer and no adjudicated labels, so actual precision, duplicate/contradiction frequency, and misses remain **unmeasured**. Keep this gate open before any new apply path. | [Platform Dream](https://docs.mem0.ai/platform/features/dream), [local Dream](dream.md) |
 
 ## Done
 
