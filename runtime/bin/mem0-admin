@@ -11,8 +11,10 @@ import os
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -383,6 +385,120 @@ def evaluation_sample(
         "sampled_pairs": sampled,
         "interpretation": "Label each pair duplicate, contradiction, related, unrelated, or uncertain; do not publish this output.",
     }
+
+
+EVALUATION_LABELS = {
+    "d": "duplicate", "c": "contradiction", "r": "related",
+    "n": "unrelated", "u": "uncertain",
+}
+
+
+def terminal_safe(text: str) -> str:
+    return "".join(ascii(char)[1:-1] if unicodedata.category(char).startswith("C") else char for char in text)
+
+
+def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Path:
+    """Show private pairs locally; append labels, never raw memories, to private state."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise AdminError("--eval-review requires a private interactive terminal")
+    report = evaluation_sample(list(iter_memories(app_id)), app_id, sample_size, seed)
+    pairs = report["sampled_pairs"]
+    if not pairs:
+        raise AdminError("no same-scope memory pairs to label")
+    scope_key = hashlib.sha256(json.dumps([USER_ID, app_id, sample_size, seed]).encode()).hexdigest()[:16]
+    fingerprint = report["scan_fingerprint_sha256"]
+    path = STATE_ROOT / "evaluations" / f"m01a-{scope_key}-{fingerprint[:16]}.jsonl"
+    if RUNTIME_DIR.parent in path.resolve().parents:
+        raise AdminError("evaluation labels must be stored outside the repository")
+    try:
+        STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root = STATE_ROOT.lstat()
+        if not stat.S_ISDIR(root.st_mode) or root.st_uid != os.geteuid():
+            raise AdminError(f"evaluation state root is not an owned directory: {STATE_ROOT}")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory = path.parent.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.geteuid()
+                or stat.S_IMODE(directory.st_mode) != 0o700):
+            raise AdminError(f"evaluation directory is not private and owned by this user: {path.parent}")
+    except OSError as exc:
+        raise AdminError(f"cannot prepare private evaluation directory: {exc}") from exc
+    pair_hashes = [hashlib.sha256(json.dumps(pair, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                   for pair in pairs]
+    header = {
+        "schema_version": 1,
+        "scan_fingerprint_sha256": fingerprint,
+        "scope_sha256": scope_key,
+        "seed": seed,
+        "sample_size_per_stratum": sample_size,
+        "population_pairs": report["population_pairs"],
+        "sample_strata": [pair["stratum"] for pair in pairs],
+        "pair_sha256": pair_hashes,
+    }
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+            details = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
+                    or stat.S_IMODE(details.st_mode) != 0o600):
+                raise AdminError("evaluation label file must be a private regular file (mode 0600)")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise AdminError("another review is using this label file") from exc
+            lines = handle.readlines()
+            if any(not line.endswith("\n") for line in lines):
+                raise AdminError("evaluation label file has an incomplete line; preserve it for recovery")
+            try:
+                records = [json.loads(line) for line in lines]
+            except json.JSONDecodeError as exc:
+                raise AdminError("evaluation label file is incomplete or invalid; preserve it for recovery") from exc
+            if records and records[0] != header:
+                raise AdminError("evaluation sample changed; existing labels were not modified")
+            if not records:
+                line = json.dumps(header, ensure_ascii=False) + "\n"
+                if handle.write(line) != len(line):
+                    raise AdminError("evaluation header write was incomplete; preserve the file for recovery")
+                handle.flush()
+                os.fsync(handle.fileno())
+            labels: dict[int, str] = {}
+            for record in records[1:]:
+                index = record.get("index") if isinstance(record, dict) else None
+                if (not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(pairs)
+                        or index in labels or record.get("pair_sha256") != pair_hashes[index]
+                        or record.get("label") not in EVALUATION_LABELS.values()):
+                    raise AdminError("evaluation label file has invalid or repeated entries; preserve it for recovery")
+                labels[index] = record["label"]
+            print(f"M01a private review: {len(labels)}/{len(pairs)} labeled. File: {path}")
+            print("d=duplicate, c=contradiction, r=related, n=unrelated, u=uncertain, q=quit")
+            print("Contradiction means incompatible claims about the same subject and time.")
+            for index, pair in enumerate(pairs):
+                if index in labels:
+                    continue
+                print(f"\n[{index + 1}/{len(pairs)}] {pair['stratum']}")
+                print(f"A: {terminal_safe(pair['source_memories'][0])}\nB: {terminal_safe(pair['source_memories'][1])}")
+                while True:
+                    try:
+                        answer = input("Label [d/c/r/n/u/q]: ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = "q"
+                        print()
+                    if answer in EVALUATION_LABELS or answer == "q":
+                        break
+                    print("Choose d, c, r, n, u, or q.")
+                if answer == "q":
+                    print(f"Paused at {len(labels)}/{len(pairs)}; rerun the same command to resume.")
+                    return path
+                record = {"index": index, "pair_sha256": pair_hashes[index], "label": EVALUATION_LABELS[answer]}
+                line = json.dumps(record) + "\n"
+                if handle.write(line) != len(line):
+                    raise AdminError("evaluation label write was incomplete; preserve the file for recovery")
+                handle.flush()
+                os.fsync(handle.fileno())
+                labels[index] = record["label"]
+            print(f"Review complete: {len(labels)}/{len(pairs)} labels saved privately at {path}")
+    except OSError as exc:
+        raise AdminError(f"cannot open private evaluation labels: {exc}") from exc
+    return path
 
 
 def search(query: str, kind: Optional[str], app_id: Optional[str]) -> list[dict[str, Any]]:
@@ -807,6 +923,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--candidates", action="store_true", help="Print read-only review candidates as JSON")
     mode.add_argument("--eval-sample", action="store_true", help="Print a stratified private pair-labeling sample")
+    mode.add_argument("--eval-review", action="store_true", help="Label private pairs interactively and resume safely")
     mode.add_argument("--apply", type=Path, metavar="PLAN")
     mode.add_argument("--auto", action="store_true")
     dream_parser.add_argument("--app-id")
@@ -859,6 +976,10 @@ def main() -> int:
                 raise AdminError("--eval-sample requires --private-output and does not accept --yes")
             report = evaluation_sample(list(iter_memories(args.app_id)), args.app_id, args.sample_size, args.seed)
             print(json.dumps(report, ensure_ascii=False, indent=2))
+        elif args.command == "dream" and args.eval_review:
+            if args.yes or not args.private_output:
+                raise AdminError("--eval-review requires --private-output and does not accept --yes")
+            review_evaluation(args.app_id, args.sample_size, args.seed)
         elif args.command == "dream" and args.apply:
             apply_plan(args.apply, args.yes)
         elif args.command == "dream" and args.auto:
