@@ -78,3 +78,15 @@ class FeedbackStore:
             if row is None:
                 raise ValueError("feedback scope conflict")
             return dict(row)
+
+    def delete(self, memory_id: str) -> None:
+        with closing(self._connect()) as connection, connection:
+            if self._exists(connection):
+                connection.execute("DELETE FROM local_feedback WHERE memory_id = ?", (memory_id,))
+
+
+def delete_memory_with_feedback(memory, feedback_store: FeedbackStore | None, memory_id: str):
+    """Clear ancillary labels first; Mem0's delete writes to this same SQLite database."""
+    if feedback_store is not None:
+        feedback_store.delete(memory_id)
+    return memory.delete(memory_id)

@@ -23,6 +23,7 @@ sys.modules[LOADER.name] = mem0_backup
 LOADER.exec_module(mem0_backup)
 sys.path.insert(0, str(ROOT))
 import backup_lock  # noqa: E402 - runtime path is inserted above for the script test
+from feedback_store import FeedbackStore  # noqa: E402
 
 
 class GenerationTest(unittest.TestCase):
@@ -106,6 +107,22 @@ class LocalBackupTest(unittest.TestCase):
 
             self.assertEqual(rows, {"local_feedback": 1, "messages": 2})
             mem0_backup.verify(self.make_generation(root))
+
+    def test_production_feedback_row_survives_backup_and_restore(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            live = root / "history.db"
+            sqlite3.connect(live).close()
+            feedback = FeedbackStore(live)
+            original = feedback.set("11111111-1111-4111-8111-111111111111", "synthetic-user", "NEGATIVE", "stale")
+            generation = root / "generation"
+            generation.mkdir()
+            rows = mem0_backup.sqlite_backup(live, generation / "history.db")
+
+            feedback.set(original["memory_id"], original["user_id"], "POSITIVE", "updated")
+            mem0_backup.restore_history(generation, live, rows)
+
+            self.assertEqual(feedback.get(original["memory_id"], original["user_id"]), original)
 
     def test_quiesced_sqlite_copy_uses_restricted_container(self):
         with tempfile.TemporaryDirectory() as temp_dir:

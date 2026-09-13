@@ -30,7 +30,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
-from feedback_store import FeedbackStore  # noqa: E402
+from feedback_store import FeedbackStore, delete_memory_with_feedback  # noqa: E402
 from categories import (  # noqa: E402
     CategoryRecommendationError,
     CategoryWorker,
@@ -133,7 +133,7 @@ feedback_store = FeedbackStore(
 categorizer = MemoryCategorizer(memory, project_categories)
 category_worker = CategoryWorker(categorizer, mutation_lock)
 temporal_reasoner = TemporalReasoner(memory)
-mcp = create_mcp_server(memory, categorizer, category_worker, temporal_reasoner)
+mcp = create_mcp_server(memory, categorizer, category_worker, temporal_reasoner, feedback_store)
 
 
 @asynccontextmanager
@@ -494,7 +494,7 @@ def guarded_delete_memory(
                     expected_user_id=expected_user_id,
                     expected_app_id=expected_app_id,
                 )
-            memory.delete(memory_id)
+            delete_memory_with_feedback(memory, feedback_store, memory_id)
         return {"ok": True, "deleted": memory_id}
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
@@ -547,7 +547,7 @@ def delete_memory(memory_id: str):
         )
     try:
         with mutation_lock():
-            memory.delete(memory_id)
+            delete_memory_with_feedback(memory, feedback_store, memory_id)
         return {"ok": True, "deleted": memory_id}
     except Exception as e:
         raise_api_error("Deleting memory", e)

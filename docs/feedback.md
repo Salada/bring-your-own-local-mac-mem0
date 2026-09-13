@@ -27,6 +27,13 @@ include them without a separate sidecar or format. Ensure the backup command's
 generation also restores its older feedback state. The table is created only
 on the first non-null label write, not on reads.
 
+Successful memory deletion clears its feedback through guarded REST, enabled
+compatibility REST, and MCP. Cleanup runs before Mem0's deletion because Mem0
+also writes to this SQLite file; the shared lock keeps backups from observing
+the intermediate state. If Mem0 deletion then fails, the memory may remain
+without its former feedback. Restore a verified pre-delete generation only if
+that label must be recovered; do not assume cross-store atomicity.
+
 This is **collection and retrieval**, not Platform feedback-learning parity.
 Submitting a label does not change extraction, embeddings, search ranking, or
 OpenMemory UI. A future offline retrieval evaluation would also need to capture
