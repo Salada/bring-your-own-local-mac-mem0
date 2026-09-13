@@ -310,20 +310,27 @@ def print_candidates(app_id: Optional[str], max_candidates: int) -> None:
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
-def evaluation_sample(memories: list[dict[str, Any]], sample_size: int, seed: int) -> dict[str, Any]:
-    """Stratify same-scope/type pairs without classifying or changing memories."""
+def evaluation_sample(
+    memories: list[dict[str, Any]], app_id: Optional[str], sample_size: int, seed: int
+) -> dict[str, Any]:
+    """Reservoir-sample same-scope/type pairs without changing memories."""
     grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for item in memories:
+        if str(item_field(item, "user_id") or "") != USER_ID or (
+            app_id is not None and str(item_field(item, "app_id") or "") != app_id
+        ):
+            raise AdminError("memory page contained a record outside the requested evaluation scope")
         scope = tuple(str(item_field(item, key) or "") for key in ("user_id", "app_id", "agent_id", "run_id"))
         grouped[(*scope, memory_type(item))].append(item)
 
-    # ponytail: Materializing O(n²) pairs matches candidate_report; use reservoirs if scopes grow.
-    strata: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {
+    samples: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {
         "exact_pair": [],
         "related_candidate": [],
         "near_miss": [],
         "background": [],
     }
+    populations = {key: 0 for key in samples}
+    randomizer = random.Random(seed)
     for scope in sorted(grouped):
         group = grouped[scope]
         prepared = [
@@ -339,16 +346,26 @@ def evaluation_sample(memories: list[dict[str, Any]], sample_size: int, seed: in
                 else:
                     overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
                     stratum = "related_candidate" if overlap >= 0.6 else "near_miss" if overlap >= 0.4 else "background"
-                strata[stratum].append((left, right))
+                populations[stratum] += 1
+                count = populations[stratum]
+                reservoir = samples[stratum]
+                if len(reservoir) < sample_size:
+                    reservoir.append((left, right))
+                else:
+                    selected = randomizer.randrange(count)
+                    if selected < sample_size:
+                        reservoir[selected] = (left, right)
 
     digest = hashlib.sha256()
     for item in sorted(memories, key=lambda value: str(value["id"])):
-        digest.update(json.dumps([item["id"], revision(item), item.get("memory")], ensure_ascii=False).encode())
+        scope = [str(item_field(item, key) or "") for key in ("user_id", "app_id", "agent_id", "run_id")]
+        digest.update(
+            json.dumps([str(item["id"]), revision(item), item.get("memory"), scope, memory_type(item)], ensure_ascii=False).encode()
+        )
         digest.update(b"\n")
-    randomizer = random.Random(seed)
     sampled = []
-    for stratum, population in strata.items():
-        for left, right in randomizer.sample(population, min(sample_size, len(population))):
+    for stratum, reservoir in samples.items():
+        for left, right in reservoir:
             sampled.append({
                 "stratum": stratum,
                 "source_memory_ids": [str(left["id"]), str(right["id"])],
@@ -358,10 +375,11 @@ def evaluation_sample(memories: list[dict[str, Any]], sample_size: int, seed: in
             })
     return {
         "mode": "private_pair_evaluation_sample",
+        "unit": "memory_pair",
         "seed": seed,
         "scanned": len(memories),
-        "snapshot_sha256": digest.hexdigest(),
-        "population_pairs": {key: len(value) for key, value in strata.items()},
+        "scan_fingerprint_sha256": digest.hexdigest(),
+        "population_pairs": populations,
         "sampled_pairs": sampled,
         "interpretation": "Label each pair duplicate, contradiction, related, unrelated, or uncertain; do not publish this output.",
     }
@@ -839,7 +857,7 @@ def main() -> int:
         elif args.command == "dream" and args.eval_sample:
             if args.yes or not args.private_output:
                 raise AdminError("--eval-sample requires --private-output and does not accept --yes")
-            report = evaluation_sample(list(iter_memories(args.app_id)), args.sample_size, args.seed)
+            report = evaluation_sample(list(iter_memories(args.app_id)), args.app_id, args.sample_size, args.seed)
             print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "dream" and args.apply:
             apply_plan(args.apply, args.yes)

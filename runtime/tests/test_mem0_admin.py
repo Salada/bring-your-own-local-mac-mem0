@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -43,17 +44,65 @@ class Mem0AdminTest(unittest.TestCase):
             },
         ]
 
-        report = mem0_admin.evaluation_sample(memories, sample_size=2, seed=7)
+        report = mem0_admin.evaluation_sample(memories, app_id=None, sample_size=2, seed=7)
 
         self.assertEqual(
             report["population_pairs"], {"exact_pair": 0, "related_candidate": 1, "near_miss": 2, "background": 3}
         )
         self.assertEqual(len(report["sampled_pairs"]), 5)
-        self.assertEqual(report, mem0_admin.evaluation_sample(list(reversed(memories)), sample_size=2, seed=7))
+        self.assertEqual(
+            report, mem0_admin.evaluation_sample(list(reversed(memories)), app_id=None, sample_size=2, seed=7)
+        )
         self.assertTrue(
             all("other" not in memory_id for row in report["sampled_pairs"] for memory_id in row["source_memory_ids"])
         )
         self.assertTrue(all(row["label"] is None for row in report["sampled_pairs"]))
+        related = {
+            tuple(row["source_memory_ids"]) for row in report["sampled_pairs"] if row["stratum"] == "related_candidate"
+        }
+        candidates = mem0_admin.candidate_report(memories, None, 100)
+        expected = {
+            tuple(row["source_memory_ids"]) for row in candidates["candidates"] if row["kind"] == "related_pair_review"
+        }
+        self.assertEqual(related, expected)
+
+    def test_private_evaluation_rejects_scope_drift_and_fingerprint_tracks_grouping(self):
+        memories = [
+            {**item("a", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+            {**item("b", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+        ]
+        original = mem0_admin.evaluation_sample(memories, None, 1, 7)
+        changed_type = [{**memories[0], "metadata": {"type": "preference"}}, memories[1]]
+        changed_app = [{**memories[0], "app_id": "two"}, memories[1]]
+
+        self.assertNotEqual(
+            original["scan_fingerprint_sha256"],
+            mem0_admin.evaluation_sample(changed_type, None, 1, 7)["scan_fingerprint_sha256"],
+        )
+        self.assertNotEqual(
+            original["scan_fingerprint_sha256"],
+            mem0_admin.evaluation_sample(changed_app, None, 1, 7)["scan_fingerprint_sha256"],
+        )
+        self.assertEqual(original["population_pairs"]["exact_pair"], 1)
+        self.assertEqual(mem0_admin.evaluation_sample(changed_type, None, 1, 7)["population_pairs"]["exact_pair"], 0)
+        with self.assertRaisesRegex(mem0_admin.AdminError, "outside the requested"):
+            mem0_admin.evaluation_sample(changed_app, "one", 1, 7)
+        with self.assertRaisesRegex(mem0_admin.AdminError, "outside the requested"):
+            mem0_admin.evaluation_sample([{**memories[0], "user_id": "foreign"}], None, 1, 7)
+
+    def test_private_evaluation_reservoir_is_bounded_for_dense_scope(self):
+        memories = [
+            {**item(str(index), "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID} for index in range(600)
+        ]
+        tracemalloc.start()
+        try:
+            report = mem0_admin.evaluation_sample(memories, None, 2, 7)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(report["population_pairs"]["exact_pair"], 179700)
+        self.assertEqual(len(report["sampled_pairs"]), 2)
+        self.assertLess(peak, 4 * 1024 * 1024)
 
     def test_private_evaluation_output_requires_explicit_ack_before_read(self):
         with (
@@ -65,6 +114,36 @@ class Mem0AdminTest(unittest.TestCase):
             self.assertEqual(mem0_admin.main(), 1)
         read.assert_not_called()
         backup.assert_not_called()
+
+        with (
+            mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--eval-sample", "--private-output", "--yes"]),
+            mock.patch.object(mem0_admin, "iter_memories") as read,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(mem0_admin.main(), 1)
+        read.assert_not_called()
+
+    def test_private_evaluation_success_only_prints_json(self):
+        memories = [{**item("one", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID}]
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "admin-state"
+            output = io.StringIO()
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", return_value=iter(memories)) as read,
+                mock.patch.object(mem0_admin, "capture_backup") as backup,
+                mock.patch.object(mem0_admin, "guarded_delete") as delete,
+                mock.patch.object(mem0_admin, "create_plan") as plan,
+                mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--eval-sample", "--private-output"]),
+                redirect_stdout(output),
+            ):
+                self.assertEqual(mem0_admin.main(), 0)
+            self.assertEqual(json.loads(output.getvalue())["mode"], "private_pair_evaluation_sample")
+            read.assert_called_once_with(None)
+            backup.assert_not_called()
+            delete.assert_not_called()
+            plan.assert_not_called()
+            self.assertFalse(state_root.exists())
 
     def test_dream_candidate_report_keeps_source_ids_and_scope(self):
         memories = [
