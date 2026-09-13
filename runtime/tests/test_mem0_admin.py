@@ -29,6 +29,43 @@ def item(memory_id, text, kind="decision", created="2026-09-01T00:00:00+00:00", 
 
 
 class Mem0AdminTest(unittest.TestCase):
+    def test_private_evaluation_sample_is_stratified_scoped_and_deterministic(self):
+        memories = [
+            {**item("a", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+            {**item("b", "alpha beta gamma epsilon"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+            {**item("c", "alpha beta zeta eta"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+            {**item("d", "theta iota kappa lambda"), "user_id": mem0_admin.USER_ID, "app_id": "one"},
+            {**item("other-app", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID, "app_id": "two"},
+            {
+                **item("other-type", "alpha beta gamma delta", kind="preference"),
+                "user_id": mem0_admin.USER_ID,
+                "app_id": "one",
+            },
+        ]
+
+        report = mem0_admin.evaluation_sample(memories, sample_size=2, seed=7)
+
+        self.assertEqual(
+            report["population_pairs"], {"exact_pair": 0, "related_candidate": 1, "near_miss": 2, "background": 3}
+        )
+        self.assertEqual(len(report["sampled_pairs"]), 5)
+        self.assertEqual(report, mem0_admin.evaluation_sample(list(reversed(memories)), sample_size=2, seed=7))
+        self.assertTrue(
+            all("other" not in memory_id for row in report["sampled_pairs"] for memory_id in row["source_memory_ids"])
+        )
+        self.assertTrue(all(row["label"] is None for row in report["sampled_pairs"]))
+
+    def test_private_evaluation_output_requires_explicit_ack_before_read(self):
+        with (
+            mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--eval-sample"]),
+            mock.patch.object(mem0_admin, "iter_memories") as read,
+            mock.patch.object(mem0_admin, "capture_backup") as backup,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(mem0_admin.main(), 1)
+        read.assert_not_called()
+        backup.assert_not_called()
+
     def test_dream_candidate_report_keeps_source_ids_and_scope(self):
         memories = [
             {

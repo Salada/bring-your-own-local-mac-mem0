@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -22,7 +24,7 @@ from typing import Any, Iterator, Optional
 
 RUNTIME_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNTIME_DIR))
-from env_loader import load_runtime_env
+from env_loader import load_runtime_env  # noqa: E402 - runtime path is inserted above
 
 load_runtime_env(RUNTIME_DIR)
 
@@ -306,6 +308,63 @@ def candidate_report(memories: list[dict[str, Any]], app_id: Optional[str], max_
 def print_candidates(app_id: Optional[str], max_candidates: int) -> None:
     report = candidate_report(list(iter_memories(app_id)), app_id, max_candidates)
     print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+def evaluation_sample(memories: list[dict[str, Any]], sample_size: int, seed: int) -> dict[str, Any]:
+    """Stratify same-scope/type pairs without classifying or changing memories."""
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for item in memories:
+        scope = tuple(str(item_field(item, key) or "") for key in ("user_id", "app_id", "agent_id", "run_id"))
+        grouped[(*scope, memory_type(item))].append(item)
+
+    # ponytail: Materializing O(n²) pairs matches candidate_report; use reservoirs if scopes grow.
+    strata: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {
+        "exact_pair": [],
+        "related_candidate": [],
+        "near_miss": [],
+        "background": [],
+    }
+    for scope in sorted(grouped):
+        group = grouped[scope]
+        prepared = [
+            (item, normalize_text(str(item.get("memory") or "")), significant_words(str(item.get("memory") or "")))
+            for item in sorted(group, key=lambda value: str(value["id"]))
+        ]
+        for index, (left, left_text, left_words) in enumerate(prepared):
+            for right, right_text, right_words in prepared[index + 1:]:
+                if left_text and left_text == right_text:
+                    stratum = "exact_pair"
+                elif len(left_words) < 3 or len(right_words) < 3:
+                    stratum = "background"
+                else:
+                    overlap = len(left_words & right_words) / min(len(left_words), len(right_words))
+                    stratum = "related_candidate" if overlap >= 0.6 else "near_miss" if overlap >= 0.4 else "background"
+                strata[stratum].append((left, right))
+
+    digest = hashlib.sha256()
+    for item in sorted(memories, key=lambda value: str(value["id"])):
+        digest.update(json.dumps([item["id"], revision(item), item.get("memory")], ensure_ascii=False).encode())
+        digest.update(b"\n")
+    randomizer = random.Random(seed)
+    sampled = []
+    for stratum, population in strata.items():
+        for left, right in randomizer.sample(population, min(sample_size, len(population))):
+            sampled.append({
+                "stratum": stratum,
+                "source_memory_ids": [str(left["id"]), str(right["id"])],
+                "source_revisions": [revision(left), revision(right)],
+                "source_memories": [str(left.get("memory") or ""), str(right.get("memory") or "")],
+                "label": None,
+            })
+    return {
+        "mode": "private_pair_evaluation_sample",
+        "seed": seed,
+        "scanned": len(memories),
+        "snapshot_sha256": digest.hexdigest(),
+        "population_pairs": {key: len(value) for key, value in strata.items()},
+        "sampled_pairs": sampled,
+        "interpretation": "Label each pair duplicate, contradiction, related, unrelated, or uncertain; do not publish this output.",
+    }
 
 
 def search(query: str, kind: Optional[str], app_id: Optional[str]) -> list[dict[str, Any]]:
@@ -729,11 +788,15 @@ def build_parser() -> argparse.ArgumentParser:
     mode = dream_parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--candidates", action="store_true", help="Print read-only review candidates as JSON")
+    mode.add_argument("--eval-sample", action="store_true", help="Print a stratified private pair-labeling sample")
     mode.add_argument("--apply", type=Path, metavar="PLAN")
     mode.add_argument("--auto", action="store_true")
     dream_parser.add_argument("--app-id")
     dream_parser.add_argument("--max-actions", type=positive_max_actions, default=MAX_ACTIONS)
     dream_parser.add_argument("--max-candidates", type=positive_backfill_limit, default=100)
+    dream_parser.add_argument("--sample-size", type=int, choices=range(1, 51), default=20)
+    dream_parser.add_argument("--seed", type=int, default=20260913)
+    dream_parser.add_argument("--private-output", action="store_true", help="Acknowledge raw memory text on stdout")
     dream_parser.add_argument("--yes", action="store_true")
 
     categorize_parser = subparsers.add_parser("categorize", help="Preview or apply category backfill")
@@ -773,6 +836,11 @@ def main() -> int:
             if args.yes:
                 raise AdminError("--candidates is read-only and does not accept --yes")
             print_candidates(args.app_id, args.max_candidates)
+        elif args.command == "dream" and args.eval_sample:
+            if args.yes or not args.private_output:
+                raise AdminError("--eval-sample requires --private-output and does not accept --yes")
+            report = evaluation_sample(list(iter_memories(args.app_id)), args.sample_size, args.seed)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "dream" and args.apply:
             apply_plan(args.apply, args.yes)
         elif args.command == "dream" and args.auto:
