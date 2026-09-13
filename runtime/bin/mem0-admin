@@ -404,10 +404,8 @@ def highlight_shared_words(text: str, common: set[str], color: bool) -> str:
     for match in WORD_RE.finditer(text):
         parts.append(terminal_safe(text[end:match.start()]))
         token = terminal_safe(match.group())
-        if match.group().casefold() in common:
-            token = f"⟦{token}⟧"
-            if color:
-                token = f"\x1b[1;4;33m{token}\x1b[0m"
+        if color and match.group().casefold() in common:
+            token = f"\x1b[1;4;33m{token}\x1b[0m"
         parts.append(token)
         end = match.end()
     parts.append(terminal_safe(text[end:]))
@@ -417,34 +415,42 @@ def highlight_shared_words(text: str, common: set[str], color: bool) -> str:
 def review_pair_display(pair: dict[str, Any], index: int, total: int, color: bool) -> str:
     left, right = (unicodedata.normalize("NFC", text) for text in pair["source_memories"])
     common = significant_words(left) & significant_words(right)
-    heading_a = "A  첫 번째 기억"
-    heading_b = "B  두 번째 기억"
+    heading_a = "A  FIRST MEMORY"
+    heading_b = "B  SECOND MEMORY"
     if color:
         heading_a = f"\x1b[1;36m{heading_a}\x1b[0m"
         heading_b = f"\x1b[1;35m{heading_b}\x1b[0m"
     border = "━" * 56
+    border_a = f"\x1b[36m{border}\x1b[0m" if color else border
+    border_b = f"\x1b[35m{border}\x1b[0m" if color else border
+    if not common:
+        hint = "Shared exact words: none"
+    elif color:
+        hint = "Shared words appear in bold yellow. Exact lexical match only; not semantic similarity."
+    else:
+        hint = "Shared exact words: " + ", ".join(terminal_safe(word) for word in sorted(common))
     return "\n".join([
-        f"\n{border}\n쌍 {index + 1}/{total} · {pair['stratum']}\n{border}",
-        f"┏━ {heading_a}\n┃ {highlight_shared_words(left, common, color)}\n┗{border}",
-        f"┏━ {heading_b}\n┃ {highlight_shared_words(right, common, color)}\n┗{border}",
-        "⟦표시⟧ = 양쪽에 똑같이 등장하는 단어 (의미적 유사성 판정 아님)",
+        f"\n{border}\nPAIR {index + 1}/{total} · {pair['stratum']}\n{border}",
+        f"{heading_a}\n  {highlight_shared_words(left, common, color)}\n{border_a}",
+        f"{heading_b}\n  {highlight_shared_words(right, common, color)}\n{border_b}",
+        hint,
     ])
 
 
 REVIEW_CHOICES = (
-    ("d", "중복", "같은 사실/주장의 반복"),
-    ("c", "모순", "같은 대상·시점에서 양립 불가"),
-    ("r", "관련", "주제는 같지만 양립 가능"),
-    ("n", "무관", "관련 없음"),
-    ("u", "불확실", "판단 보류"),
-    ("q", "중단", "저장 후 나중에 재개"),
+    ("d", "duplicate", "the same fact or claim repeated"),
+    ("c", "contradiction", "incompatible claims about the same subject and time"),
+    ("r", "related", "same topic, but compatible claims"),
+    ("n", "unrelated", "no meaningful relation"),
+    ("u", "uncertain", "cannot decide"),
+    ("q", "quit", "save progress and resume later"),
 )
 
 
 def review_choices_display(color: bool) -> str:
-    lines = ["판정 선택 · 한 글자 입력"]
+    lines = ["LABEL  Enter one letter"]
     for key, label, meaning in REVIEW_CHOICES:
-        marker = f"▶ [{key}] 【{label}】"
+        marker = f"{key.upper()}  {label.upper():<14}"
         if color:
             marker = f"\x1b[1;32m{marker}\x1b[0m"
         lines.append(f"{marker} — {meaning}")
@@ -522,7 +528,7 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
                         or record.get("label") not in EVALUATION_LABELS.values()):
                     raise AdminError("evaluation label file has invalid or repeated entries; preserve it for recovery")
                 labels[index] = record["label"]
-            print(f"M01a 비공개 판정: {len(labels)}/{len(pairs)} 완료. 저장 위치: {path}")
+            print(f"M01a private review: {len(labels)}/{len(pairs)} labeled. File: {path}")
             color = "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
             for index, pair in enumerate(pairs):
                 if index in labels:
@@ -531,13 +537,13 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
                 while True:
                     print(review_choices_display(color))
                     try:
-                        answer = input("판정 > ").strip().lower()
+                        answer = input("Label > ").strip().lower()
                     except (EOFError, KeyboardInterrupt):
                         answer = "q"
                         print()
                     if answer in EVALUATION_LABELS or answer == "q":
                         break
-                    print("입력을 인식하지 못했습니다. 아래 선택지에서 한 글자를 골라 주세요.")
+                    print("Unrecognized input. Choose one letter from the guide below.")
                 if answer == "q":
                     print(f"Paused at {len(labels)}/{len(pairs)}; rerun the same command to resume.")
                     return path

@@ -115,11 +115,12 @@ For direct human labeling, run `mem0-admin dream --eval-review
 --private-output --sample-size 20 --seed 20260913` in a private local
 terminal. It shows one pair at a time; enter `d` duplicate, `c` contradiction,
 `r` related, `n` unrelated, `u` uncertain, or `q` to pause. Each answer is
-prompted with its emphasized full meaning for every pair (and after invalid
-input). Separate A/B blocks and
-`⟦word⟧` markers (yellow/underlined when color is available) make exact shared
-significant words visible; these markers are **lexical hints, not semantic
-similarity or evidence of a duplicate**. Set `NO_COLOR=1` for plain output.
+prompted in English with its full meaning for every pair and after invalid
+input. Separate A/B blocks use bold colored headings; exact shared significant
+words are bold, yellow, and underlined when color is available. No bracket
+markers are added to displayed words or keys. With `NO_COLOR=1`, the plain
+display lists shared words on a separate line instead. These are **lexical
+hints, not semantic similarity or evidence of a duplicate**.
 The labels and sample are unchanged by presentation options. Each answer is
 immediately appended to a mode-`0600` JSONL file under
 `~/.local/state/mem0-admin/evaluations/`. The file contains labels, strata,
