@@ -145,6 +145,46 @@ class Mem0AdminTest(unittest.TestCase):
             plan.assert_not_called()
             self.assertFalse(state_root.exists())
 
+    def test_private_interactive_review_resumes_without_storing_raw_memories(self):
+        memories = [
+            {**item("a", "alpha beta gamma delta"), "user_id": mem0_admin.USER_ID},
+            {**item("b", "alpha beta gamma epsilon"), "user_id": mem0_admin.USER_ID},
+            {**item("c", "alpha beta gamma zeta"), "user_id": mem0_admin.USER_ID},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "admin-state"
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch("builtins.input", side_effect=["d", "q"]),
+                redirect_stdout(io.StringIO()),
+            ):
+                path = mem0_admin.review_evaluation(None, 2, 7)
+            lines = path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(json.loads(lines[1])["label"], "duplicate")
+            self.assertNotIn("alpha beta", "\n".join(lines))
+            self.assertNotIn('"source_memory_ids"', "\n".join(lines))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch("builtins.input", return_value="u") as answer,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(mem0_admin.review_evaluation(None, 2, 7), path)
+            answer.assert_called_once()
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 3)
+
+    def test_private_interactive_review_requires_ack_before_read(self):
+        with (
+            mock.patch.object(sys, "argv", ["mem0-admin", "dream", "--eval-review"]),
+            mock.patch.object(mem0_admin, "iter_memories") as read,
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(mem0_admin.main(), 1)
+        read.assert_not_called()
+
     def test_dream_candidate_report_keeps_source_ids_and_scope(self):
         memories = [
             {

@@ -111,6 +111,18 @@ issue, PR, CI log, or external benchmark service.
 
 ## Private adjudication sample
 
+For direct human labeling, run `mem0-admin dream --eval-review
+--private-output --sample-size 20 --seed 20260913` in a private local
+terminal. It shows one pair at a time; enter `d` duplicate, `c` contradiction,
+`r` related, `n` unrelated, `u` uncertain, or `q` to pause. Each answer is
+immediately appended to a mode-`0600` JSONL file under
+`~/.local/state/mem0-admin/evaluations/`. The file contains labels, strata,
+population counts, and hashes, **not memory text or IDs**. Repeating the
+command resumes if the scoped scan fingerprint is unchanged; a changed live
+store starts a distinct sample and preserves prior labels. Keep the terminal
+and label file private. The human reviewer should judge independently; these
+labels are not model-generated and no memory is altered.
+
 Run `mem0-admin dream --eval-sample --private-output --sample-size 20 --seed
 20260913` only in a private local terminal. The explicit flag is required
 because the JSON printed to stdout includes **full memory text and IDs**. The
@@ -125,8 +137,8 @@ normalized exact pairs, related candidates (lexical overlap at least 0.6),
 near misses (0.4–0.6), and all remaining background pairs. It records the
 population size of each stratum, the random seed, source revisions, and a
 scan fingerprint covering text, revision, scope, and type. Pair enumeration
-uses quadratic CPU time but bounded sample storage. Two independent reviewers
-should mark each pair
+uses quadratic CPU time but bounded sample storage. When two independent
+reviewers are available, they should mark each pair
 `duplicate`, `contradiction`, `related`, `unrelated`, or `uncertain` before
 resolving disagreements. A contradiction requires incompatible claims about
 the same subject and time; a changed preference or sequential task stage is
