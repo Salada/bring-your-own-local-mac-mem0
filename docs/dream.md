@@ -115,6 +115,11 @@ For direct human labeling, run `mem0-admin dream --eval-review
 --private-output --sample-size 20 --seed 20260913` in a private local
 terminal. It shows one pair at a time; enter `d` duplicate, `c` contradiction,
 `r` related, `n` unrelated, `u` uncertain, or `q` to pause. Each answer is
+prompted with its full meaning for every pair. Separate A/B blocks and
+`⟦word⟧` markers (yellow/underlined when color is available) make exact shared
+significant words visible; these markers are **lexical hints, not semantic
+similarity or evidence of a duplicate**. Set `NO_COLOR=1` for plain output.
+The labels and sample are unchanged by presentation options. Each answer is
 immediately appended to a mode-`0600` JSONL file under
 `~/.local/state/mem0-admin/evaluations/`. The file contains labels, strata,
 population counts, and hashes, **not memory text or IDs**. Repeating the
