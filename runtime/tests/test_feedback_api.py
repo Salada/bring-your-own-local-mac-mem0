@@ -174,7 +174,8 @@ class FeedbackApiTest(unittest.TestCase):
                     "updated_at": "2026-09-13T00:00:00+00:00",
                 }
                 client.post("/v1/feedback", json={"memory_id": MISSING_ID, "feedback": "VERY_NEGATIVE"})
-                mcp = create_mcp_server(memory, feedback_store=FeedbackStore(history_db))
+                # Standalone MCP construction must discover feedback storage from Mem0 config.
+                mcp = create_mcp_server(memory)
                 with mock.patch("mcp_server._capture_backup_generation", return_value="/synthetic-backup"):
                     _, mcp_deleted = asyncio.run(
                         mcp.call_tool(

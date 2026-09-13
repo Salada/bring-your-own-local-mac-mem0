@@ -149,6 +149,10 @@ def create_mcp_server(
 ) -> FastMCP:
     """Initialize FastMCP server with comprehensive Mem0 toolset."""
     mcp = FastMCP("mem0", instructions=MCP_INSTRUCTIONS)
+    if feedback_store is None:
+        history_path = getattr(getattr(memory, "config", None), "history_db_path", None)
+        if history_path is not None:
+            feedback_store = FeedbackStore(history_path)
     categorizer = categorizer or MemoryCategorizer(memory)
     category_worker = category_worker or CategoryWorker(categorizer, mutation_lock)
     temporal_reasoner = temporal_reasoner or TemporalReasoner(memory)
@@ -518,7 +522,7 @@ if __name__ == "__main__":
     import sys
 
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
-    from server import memory
+    from server import feedback_store, memory
 
-    mcp_app = create_mcp_server(memory)
+    mcp_app = create_mcp_server(memory, feedback_store=feedback_store)
     mcp_app.run(transport="stdio")
