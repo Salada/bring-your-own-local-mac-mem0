@@ -34,6 +34,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 
 from backup_lock import maintenance_lock, mutation_lock  # noqa: E402
 from categories import CategoryWorker, MemoryCategorizer  # noqa: E402
+from feedback_store import FeedbackStore, delete_memory_with_feedback  # noqa: E402
 from memory_guards import validate_current  # noqa: E402
 from memory_listing import list_memory_page  # noqa: E402
 from temporal import TemporalReasoner, iso_timestamp, temporal_add_prompt  # noqa: E402
@@ -144,9 +145,14 @@ def create_mcp_server(
     categorizer: Optional[MemoryCategorizer] = None,
     category_worker: Optional[CategoryWorker] = None,
     temporal_reasoner: Optional[TemporalReasoner] = None,
+    feedback_store: Optional[FeedbackStore] = None,
 ) -> FastMCP:
     """Initialize FastMCP server with comprehensive Mem0 toolset."""
     mcp = FastMCP("mem0", instructions=MCP_INSTRUCTIONS)
+    if feedback_store is None:
+        history_path = getattr(getattr(memory, "config", None), "history_db_path", None)
+        if history_path is not None:
+            feedback_store = FeedbackStore(history_path)
     categorizer = categorizer or MemoryCategorizer(memory)
     category_worker = category_worker or CategoryWorker(categorizer, mutation_lock)
     temporal_reasoner = temporal_reasoner or TemporalReasoner(memory)
@@ -406,7 +412,7 @@ def create_mcp_server(
                     expected_user_id=expected_user_id,
                     expected_app_id=expected_app_id,
                 )
-                memory.delete(memory_id)
+                delete_memory_with_feedback(memory, feedback_store, memory_id)
             return json.dumps({"ok": True, "deleted": memory_id, "backup": backup}, ensure_ascii=False)
         except Exception as e:
             logger.exception("Error in guarded delete_memory: %s", e)
@@ -516,7 +522,7 @@ if __name__ == "__main__":
     import sys
 
     sys.path.insert(0, str(pathlib.Path(__file__).parent))
-    from server import memory
+    from server import feedback_store, memory
 
-    mcp_app = create_mcp_server(memory)
+    mcp_app = create_mcp_server(memory, feedback_store=feedback_store)
     mcp_app.run(transport="stdio")

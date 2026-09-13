@@ -30,6 +30,7 @@ The repository is intentionally split into two paths:
 | Restore one exact backup generation | [`docs/restore.md`](docs/restore.md) |
 | Optionally install the Codex administration skill | [`skills/mem0-local-admin/README.md`](skills/mem0-local-admin/README.md) |
 | Review planned Platform-to-local capabilities | [`docs/platform-gap-plan.md`](docs/platform-gap-plan.md) |
+| Label or inspect one memory's feedback locally | [`docs/feedback.md`](docs/feedback.md) |
 
 ## Safety defaults
 
