@@ -9,7 +9,8 @@ import pathlib
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
+from uuid import UUID
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
@@ -29,6 +30,7 @@ from mem0 import (  # noqa: E402 - telemetry and local env must be set before im
 )
 
 from backup_lock import maintenance_lock, mutation_lock, restore_marker  # noqa: E402
+from feedback_store import FeedbackStore  # noqa: E402
 from categories import (  # noqa: E402
     CategoryRecommendationError,
     CategoryWorker,
@@ -125,6 +127,9 @@ if incomplete_restore.exists():
     )
 
 memory, project_categories = load_memory()
+feedback_store = FeedbackStore(
+    getattr(getattr(memory, "config", None), "history_db_path", pathlib.Path.home() / ".local/share/mem0/history.db")
+)
 categorizer = MemoryCategorizer(memory, project_categories)
 category_worker = CategoryWorker(categorizer, mutation_lock)
 temporal_reasoner = TemporalReasoner(memory)
@@ -215,6 +220,13 @@ class UpdateMemoryRequest(BaseModel):
     data: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     expiration_date: Optional[str] = None
+
+
+class FeedbackRequest(BaseModel):
+    memory_id: str = Field(min_length=1, max_length=128)
+    feedback: Optional[Literal["POSITIVE", "NEGATIVE", "VERY_NEGATIVE"]] = None
+    feedback_reason: Optional[str] = Field(default=None, max_length=2000)
+    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1, max_length=128)
 
 
 class LoginRequest(BaseModel):
@@ -399,6 +411,53 @@ def get_memory(memory_id: str):
         return memory.get(memory_id)
     except Exception as e:
         raise_api_error("Getting memory", e)
+
+
+def require_feedback_scope(memory_id: str, user_id: str) -> None:
+    try:
+        UUID(memory_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid memory_id") from exc
+    current = memory.get(memory_id)
+    metadata = current.get("metadata") if isinstance(current, dict) else None
+    owner = current.get("user_id") if isinstance(current, dict) else None
+    if not owner and isinstance(metadata, dict):
+        owner = metadata.get("user_id")
+    if owner != user_id:
+        raise HTTPException(status_code=404, detail="Memory not found in user scope")
+
+
+@app.post("/v1/feedback")
+@app.post("/v1/feedback/")
+def record_feedback(req: FeedbackRequest):
+    """Store or clear a scoped label; never alter the memory or search ranking."""
+    if "feedback" not in req.model_fields_set:
+        raise HTTPException(status_code=400, detail="feedback must be provided (null clears it)")
+    if req.feedback is None and req.feedback_reason is not None:
+        raise HTTPException(status_code=400, detail="feedback_reason must be null when clearing feedback")
+    try:
+        with mutation_lock():
+            require_feedback_scope(req.memory_id, req.user_id)
+            return feedback_store.set(req.memory_id, req.user_id, req.feedback, req.feedback_reason)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_api_error("Recording feedback", e)
+
+
+@app.get("/v1/feedback/{memory_id}")
+def get_feedback(memory_id: str, user_id: str = Query(default=DEFAULT_USER_ID, min_length=1, max_length=128)):
+    """Read the current label for one memory; absent or out-of-scope is 404."""
+    try:
+        require_feedback_scope(memory_id, user_id)
+        record = feedback_store.get(memory_id, user_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        return record
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_api_error("Getting feedback", e)
 
 
 @app.delete("/v1/admin/memories/{memory_id}")
