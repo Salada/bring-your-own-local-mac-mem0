@@ -18,6 +18,11 @@ sys.modules[LOADER.name] = mem0_admin
 LOADER.exec_module(mem0_admin)
 
 
+class InteractiveOutput(io.StringIO):
+    def isatty(self):
+        return True
+
+
 def item(memory_id, text, kind="decision", created="2026-09-01T00:00:00+00:00", pinned=False):
     return {
         "id": memory_id,
@@ -156,8 +161,9 @@ class Mem0AdminTest(unittest.TestCase):
             with (
                 mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
                 mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
                 mock.patch("builtins.input", side_effect=["d", "q"]),
-                redirect_stdout(io.StringIO()),
+                redirect_stdout(InteractiveOutput()),
             ):
                 path = mem0_admin.review_evaluation(None, 2, 7)
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -169,8 +175,9 @@ class Mem0AdminTest(unittest.TestCase):
             with (
                 mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
                 mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
                 mock.patch("builtins.input", return_value="u") as answer,
-                redirect_stdout(io.StringIO()),
+                redirect_stdout(InteractiveOutput()),
             ):
                 self.assertEqual(mem0_admin.review_evaluation(None, 2, 7), path)
             answer.assert_called_once()
@@ -184,6 +191,83 @@ class Mem0AdminTest(unittest.TestCase):
         ):
             self.assertEqual(mem0_admin.main(), 1)
         read.assert_not_called()
+
+    def test_private_interactive_review_rejects_non_tty_before_scan(self):
+        with (
+            mock.patch.object(mem0_admin, "iter_memories") as read,
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(mem0_admin.AdminError, "interactive terminal"),
+        ):
+            mem0_admin.review_evaluation(None, 1, 7)
+        read.assert_not_called()
+
+    def test_private_interactive_review_rejects_incomplete_tail_and_public_directory(self):
+        memories = [
+            {**item("a", "alpha beta gamma"), "user_id": mem0_admin.USER_ID},
+            {**item("b", "alpha beta delta"), "user_id": mem0_admin.USER_ID},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "admin-state"
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                mock.patch("builtins.input", return_value="q"),
+                redirect_stdout(InteractiveOutput()),
+            ):
+                path = mem0_admin.review_evaluation(None, 1, 7)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write('{"index":0}')
+            original = path.read_bytes()
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                redirect_stdout(InteractiveOutput()),
+                self.assertRaisesRegex(mem0_admin.AdminError, "incomplete line"),
+            ):
+                mem0_admin.review_evaluation(None, 1, 7)
+            self.assertEqual(path.read_bytes(), original)
+            path.parent.chmod(0o755)
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                redirect_stdout(InteractiveOutput()),
+                self.assertRaisesRegex(mem0_admin.AdminError, "directory is not private"),
+            ):
+                mem0_admin.review_evaluation(None, 1, 7)
+
+    def test_terminal_safe_escapes_control_and_directional_characters(self):
+        self.assertEqual(mem0_admin.terminal_safe("한글\x1b[2J\n\u202e"), "한글\\x1b[2J\\n\\u202e")
+
+    def test_private_interactive_review_reports_fsync_failure_without_duplicate_label(self):
+        memories = [
+            {**item("a", "alpha beta gamma"), "user_id": mem0_admin.USER_ID},
+            {**item("b", "alpha beta delta"), "user_id": mem0_admin.USER_ID},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "admin-state"
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(mem0_admin.os, "fsync", side_effect=[None, OSError("disk failed")]),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                mock.patch("builtins.input", return_value="d"),
+                redirect_stdout(InteractiveOutput()),
+                self.assertRaisesRegex(mem0_admin.AdminError, "disk failed"),
+            ):
+                mem0_admin.review_evaluation(None, 1, 7)
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", state_root),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                mock.patch("builtins.input") as answer,
+                redirect_stdout(InteractiveOutput()),
+            ):
+                path = mem0_admin.review_evaluation(None, 1, 7)
+            answer.assert_not_called()
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 2)
 
     def test_dream_candidate_report_keeps_source_ids_and_scope(self):
         memories = [

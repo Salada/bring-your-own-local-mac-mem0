@@ -120,8 +120,11 @@ immediately appended to a mode-`0600` JSONL file under
 population counts, and hashes, **not memory text or IDs**. Repeating the
 command resumes if the scoped scan fingerprint is unchanged; a changed live
 store starts a distinct sample and preserves prior labels. Keep the terminal
-and label file private. The human reviewer should judge independently; these
-labels are not model-generated and no memory is altered.
+and label file private: the command requires an interactive TTY, escapes
+terminal control characters in memories, and still leaves displayed pairs in
+that terminal's scrollback. An incomplete label-log line blocks resume
+without rewriting the file. The human reviewer should judge independently;
+these labels are not model-generated and no memory is altered.
 
 Run `mem0-admin dream --eval-sample --private-output --sample-size 20 --seed
 20260913` only in a private local terminal. The explicit flag is required

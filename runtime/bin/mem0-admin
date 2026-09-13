@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -392,8 +393,14 @@ EVALUATION_LABELS = {
 }
 
 
+def terminal_safe(text: str) -> str:
+    return "".join(ascii(char)[1:-1] if unicodedata.category(char).startswith("C") else char for char in text)
+
+
 def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Path:
     """Show private pairs locally; append labels, never raw memories, to private state."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise AdminError("--eval-review requires a private interactive terminal")
     report = evaluation_sample(list(iter_memories(app_id)), app_id, sample_size, seed)
     pairs = report["sampled_pairs"]
     if not pairs:
@@ -403,7 +410,18 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
     path = STATE_ROOT / "evaluations" / f"m01a-{scope_key}-{fingerprint[:16]}.jsonl"
     if RUNTIME_DIR.parent in path.resolve().parents:
         raise AdminError("evaluation labels must be stored outside the repository")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root = STATE_ROOT.lstat()
+        if not stat.S_ISDIR(root.st_mode) or root.st_uid != os.geteuid():
+            raise AdminError(f"evaluation state root is not an owned directory: {STATE_ROOT}")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory = path.parent.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.geteuid()
+                or stat.S_IMODE(directory.st_mode) != 0o700):
+            raise AdminError(f"evaluation directory is not private and owned by this user: {path.parent}")
+    except OSError as exc:
+        raise AdminError(f"cannot prepare private evaluation directory: {exc}") from exc
     pair_hashes = [hashlib.sha256(json.dumps(pair, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
                    for pair in pairs]
     header = {
@@ -420,13 +438,16 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
             details = os.fstat(handle.fileno())
-            if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077:
+            if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
+                    or stat.S_IMODE(details.st_mode) != 0o600):
                 raise AdminError("evaluation label file must be a private regular file (mode 0600)")
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
                 raise AdminError("another review is using this label file") from exc
             lines = handle.readlines()
+            if any(not line.endswith("\n") for line in lines):
+                raise AdminError("evaluation label file has an incomplete line; preserve it for recovery")
             try:
                 records = [json.loads(line) for line in lines]
             except json.JSONDecodeError as exc:
@@ -434,7 +455,9 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
             if records and records[0] != header:
                 raise AdminError("evaluation sample changed; existing labels were not modified")
             if not records:
-                handle.write(json.dumps(header, ensure_ascii=False) + "\n")
+                line = json.dumps(header, ensure_ascii=False) + "\n"
+                if handle.write(line) != len(line):
+                    raise AdminError("evaluation header write was incomplete; preserve the file for recovery")
                 handle.flush()
                 os.fsync(handle.fileno())
             labels: dict[int, str] = {}
@@ -452,7 +475,7 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
                 if index in labels:
                     continue
                 print(f"\n[{index + 1}/{len(pairs)}] {pair['stratum']}")
-                print(f"A: {pair['source_memories'][0]}\nB: {pair['source_memories'][1]}")
+                print(f"A: {terminal_safe(pair['source_memories'][0])}\nB: {terminal_safe(pair['source_memories'][1])}")
                 while True:
                     try:
                         answer = input("Label [d/c/r/n/u/q]: ").strip().lower()
@@ -466,7 +489,9 @@ def review_evaluation(app_id: Optional[str], sample_size: int, seed: int) -> Pat
                     print(f"Paused at {len(labels)}/{len(pairs)}; rerun the same command to resume.")
                     return path
                 record = {"index": index, "pair_sha256": pair_hashes[index], "label": EVALUATION_LABELS[answer]}
-                handle.write(json.dumps(record) + "\n")
+                line = json.dumps(record) + "\n"
+                if handle.write(line) != len(line):
+                    raise AdminError("evaluation label write was incomplete; preserve the file for recovery")
                 handle.flush()
                 os.fsync(handle.fileno())
                 labels[index] = record["label"]
