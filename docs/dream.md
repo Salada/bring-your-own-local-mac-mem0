@@ -70,3 +70,41 @@ This is not Platform Dream parity. Platform Supersede and Merge keep linked
 records and run with new additions; Synthesis is opt-in and scheduled.
 The local candidate report does none of those actions and is not an apply
 input. The existing local delete-only Dream plan remains separately guarded.
+
+## Exploratory evaluation (2026-09-13)
+
+This is a **candidate-generation** check, not a contradiction classifier or
+permission to apply changes. A consented **private evaluation** scanned one
+user scope without modifying memories. A model reviewer inspected 20 reported
+pairs sampled with `random.Random(20260913).sample` and 20 unreported pairs
+sampled the same way from the same-scope, same-type lexical-overlap slice
+`[0.4, 0.6)`. Many reported pairs described different issues or successive
+stages of one task. There was no independent adjudication or reliable label for
+every ambiguous pair, so this does **not** establish precision or recall. The
+unreported slice is deliberately near-threshold, not representative of every
+unreported pair. Dataset ordering and private snapshots were not retained, so
+the private sample is not externally reproducible. No private scope counts,
+memory text, IDs, or individual labels are published here.
+
+Two public out-of-domain checks used the Hugging Face dataset-server `rows` API,
+100 rows at each listed offset, treating each labelled pair as an isolated
+two-memory scope of the same type and running the unchanged `candidate_report`.
+Run [`runtime/tests/eval_m01a_public.py`](../runtime/tests/eval_m01a_public.py)
+to reproduce the counts while the dataset server still serves the stated
+revisions. It checks response revision, full rows, and expected counts, then
+prints counts only. It does not upload or write any memory or dataset text:
+
+| Dataset and revision | Offsets | Flagged labelled pairs | Flagged other pairs |
+| --- | --- | --- | --- |
+| [Quora duplicate questions](https://huggingface.co/datasets/sentence-transformers/quora-duplicates) `pair-class`, `41f699770310302022a4dd75d4cf903bfef9ea46` | 0, 10000 | 57/71 duplicates | 57/129 different |
+| [KLUE-NLI](https://huggingface.co/datasets/klue/klue) validation, `349481ec73fff722f88e0453ca05c77a447d967c` | 0, 1000 | 23/67 contradictions; 28/66 entailments | 14/67 neutral |
+
+These fixed offsets were chosen for a quick diagnostic, not a random benchmark.
+Question paraphrases and general NLI sentences are not stored, time-scoped
+memories; entailment is not necessarily a duplicate, and neutral is not
+necessarily unrelated. The counts show lexical leads can miss semantically
+important pairs and also flag non-duplicates. They are **not** local-memory
+accuracy estimates. Before M01b, independently label a scoped sample of actual
+candidate and non-candidate memory pairs, record ambiguous cases, and measure
+whether stale facts harm retrieval. Do not export private examples to a public
+issue, PR, CI log, or external benchmark service.
