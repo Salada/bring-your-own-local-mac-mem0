@@ -241,6 +241,62 @@ class Mem0AdminTest(unittest.TestCase):
     def test_terminal_safe_escapes_control_and_directional_characters(self):
         self.assertEqual(mem0_admin.terminal_safe("한글\x1b[2J\n\u202e"), "한글\\x1b[2J\\n\\u202e")
 
+    def test_review_pair_distinguishes_blocks_and_marks_only_shared_words(self):
+        pair = {
+            "stratum": "related_candidate",
+            "source_memories": ["Use SQLite\x1b[2J for alpha beta", "SQLite alpha beta remains useful"],
+        }
+        plain = mem0_admin.review_pair_display(pair, 0, 2, color=False)
+        colored = mem0_admin.review_pair_display(pair, 0, 2, color=True)
+        self.assertIn("┏━ A  첫 번째 기억", plain)
+        self.assertIn("┏━ B  두 번째 기억", plain)
+        self.assertIn("⟦SQLite⟧", plain)
+        self.assertIn("⟦alpha⟧", plain)
+        self.assertNotIn("⟦Use⟧", plain)
+        self.assertIn("\\x1b[2J", plain)
+        self.assertNotIn("\x1b[2J", colored)
+        self.assertNotIn("\x1b", plain)
+        self.assertIn("\x1b[1;4;33m⟦SQLite⟧\x1b[0m", colored)
+
+    def test_review_pair_marks_canonically_equivalent_hangul_and_accents(self):
+        pair = {
+            "stratum": "related_candidate",
+            "source_memories": ["한글 cafe\u0301", "한글 café"],
+        }
+        display = mem0_admin.review_pair_display(pair, 0, 1, color=False)
+        self.assertEqual(display.count("⟦한글⟧"), 2)
+        self.assertEqual(display.count("⟦café⟧"), 2)
+
+    def test_choice_guide_emphasizes_all_six_labels_with_and_without_color(self):
+        plain = mem0_admin.review_choices_display(False)
+        colored = mem0_admin.review_choices_display(True)
+        for key, label, meaning in mem0_admin.REVIEW_CHOICES:
+            self.assertIn(f"▶ [{key}] 【{label}】 — {meaning}", plain)
+            self.assertIn(f"\x1b[1;32m▶ [{key}] 【{label}】\x1b[0m — {meaning}", colored)
+        self.assertNotIn("\x1b", plain)
+
+    def test_review_choices_repeat_after_invalid_key(self):
+        memories = [
+            {**item("a", "alpha beta gamma"), "user_id": mem0_admin.USER_ID},
+            {**item("b", "alpha beta delta"), "user_id": mem0_admin.USER_ID},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            output = InteractiveOutput()
+            with (
+                mock.patch.object(mem0_admin, "STATE_ROOT", Path(temporary) / "state"),
+                mock.patch.object(mem0_admin, "iter_memories", side_effect=lambda app: iter(memories)),
+                mock.patch.object(sys, "stdin", mock.Mock(isatty=lambda: True)),
+                mock.patch.dict(mem0_admin.os.environ, {"NO_COLOR": "1"}),
+                mock.patch("builtins.input", side_effect=["x", "q"]),
+                redirect_stdout(output),
+            ):
+                mem0_admin.review_evaluation(None, 1, 7)
+            self.assertEqual(output.getvalue().count("▶ [d] 【중복】"), 2)
+            self.assertEqual(output.getvalue().count("▶ [q] 【중단】"), 2)
+            self.assertIn("A  첫 번째 기억", output.getvalue())
+            self.assertIn("B  두 번째 기억", output.getvalue())
+            self.assertNotIn("\x1b", output.getvalue())
+
     def test_private_interactive_review_reports_fsync_failure_without_duplicate_label(self):
         memories = [
             {**item("a", "alpha beta gamma"), "user_id": mem0_admin.USER_ID},
